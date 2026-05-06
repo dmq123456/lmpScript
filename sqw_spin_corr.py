@@ -10,5 +10,8 @@ if __name__ == "__main__":
     main(
         default_method="corr",
         prog="sqw_spin_corr.py",
-        description="Compute a q-resolved phonon spectrum from time-correlation functions of a three-component field.",
+        description=(
+            "Compute a q-resolved dynamic structure factor S(q,w) from "
+            "time-correlation functions of a generic three-component field."
+        ),
     )

@@ -10,5 +10,8 @@ if __name__ == "__main__":
     main(
         default_method="periodogram",
         prog="sqw_spin.py",
-        description="Compute a q-resolved phonon spectrum from a LAMMPS-like dump file.",
+        description=(
+            "Compute a q-resolved dynamic structure factor S(q,w) from a "
+            "LAMMPS-like dump file containing a generic three-component field."
+        ),
     )

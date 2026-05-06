@@ -14,10 +14,20 @@ def default_path_output_for_method(method: str) -> str:
 
 def _default_path_description(default_method: str | None) -> str:
     if default_method == "periodogram":
-        return "Compute a q-resolved phonon spectrum from a LAMMPS-like dump file."
+        return (
+            "Compute a q-resolved dynamic structure factor S(q,w) from a "
+            "LAMMPS-like dump file containing a generic three-component field."
+        )
     if default_method == "corr":
-        return "Compute a q-resolved phonon spectrum from time-correlation functions of a three-component field."
-    return "Compute a q-resolved phonon spectrum along a q-path using either a periodogram route or correlation-based spectrum estimation."
+        return (
+            "Compute a q-resolved dynamic structure factor S(q,w) from "
+            "time-correlation functions of a generic three-component field."
+        )
+    return (
+        "Compute a q-resolved dynamic structure factor S(q,w) along a q-path "
+        "using either a periodogram route or correlation-based spectrum "
+        "estimation for a generic three-component field."
+    )
 
 
 def _add_dumpfile_arg(parser: argparse.ArgumentParser) -> None:
@@ -125,7 +135,10 @@ def _add_field_columns_arg(parser: argparse.ArgumentParser) -> None:
         nargs=3,
         metavar=("COLX", "COLY", "COLZ"),
         default=("vx", "vy", "vz"),
-        help="Dump columns used as the three-component field, e.g. vx vy vz (default: vx vy vz)",
+        help=(
+            "Dump columns used as the three-component field whose dynamic "
+            "structure factor is computed, e.g. vx vy vz (default: vx vy vz)"
+        ),
     )
 
 
