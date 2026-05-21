@@ -11,6 +11,7 @@ import numpy as np
 
 from sqw_args import build_path_arg_parser, default_path_output_for_method
 from sqw_core import (
+    SQWResult,
     THZ_TO_MEV,
     SpinStructureFactorCalculator,
     cart_to_frac_q,
@@ -21,6 +22,55 @@ from sqw_core import (
     reciprocal_lattice_from_real,
     resolve_mpi_comm,
 )
+
+
+def _validate_bz_folded(bz_folded: tuple[int, int, int] | np.ndarray) -> np.ndarray:
+    folded = np.asarray(bz_folded, dtype=np.int64)
+    if folded.shape != (3,) or np.any(folded < 1):
+        raise ValueError("--bz-folded must be three positive integers")
+    return folded
+
+
+def folded_reciprocal_lattice_from_primitive(
+    primitive_reciprocal: np.ndarray,
+    bz_folded: tuple[int, int, int] | np.ndarray,
+) -> np.ndarray:
+    folded = _validate_bz_folded(bz_folded).astype(float)
+    return primitive_reciprocal / folded[:, None]
+
+
+def bz_fold_shift_vectors(bz_folded: tuple[int, int, int] | np.ndarray) -> np.ndarray:
+    folded = _validate_bz_folded(bz_folded)
+    grids = np.meshgrid(
+        *(np.arange(int(n), dtype=float) for n in folded),
+        indexing="ij",
+    )
+    return np.column_stack([grid.ravel() for grid in grids])
+
+
+def unfold_q_path_from_folded_bz(
+    q_frac_folded: np.ndarray,
+    bz_folded: tuple[int, int, int] | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    folded = _validate_bz_folded(bz_folded).astype(float)
+    shifts = bz_fold_shift_vectors(folded.astype(np.int64))
+    q_frac_unfolded = (q_frac_folded[:, None, :] + shifts[None, :, :]) / folded[None, None, :]
+    return q_frac_unfolded.reshape(-1, 3), shifts
+
+
+def fold_sqw_by_max(sqw_unfolded: np.ndarray, nq_folded: int, multiplicity: int) -> np.ndarray:
+    sqw_unfolded = np.asarray(sqw_unfolded)
+    if sqw_unfolded.ndim != 2:
+        raise ValueError("sqw_unfolded must be a 2D array")
+    if multiplicity < 1:
+        raise ValueError("multiplicity must be >= 1")
+    expected_nq = nq_folded * multiplicity
+    if sqw_unfolded.shape[0] != expected_nq:
+        raise ValueError(
+            f"Expected {expected_nq} unfolded q points for nq_folded={nq_folded} and multiplicity={multiplicity}, "
+            f"got {sqw_unfolded.shape[0]}"
+        )
+    return sqw_unfolded.reshape(nq_folded, multiplicity, sqw_unfolded.shape[1]).max(axis=1)
 
 
 def axis_edges(values: np.ndarray) -> np.ndarray:
@@ -154,9 +204,13 @@ def main(
     freq_min_thz = getattr(args, "freq_min_thz", 0.0)
     freq_max_thz = getattr(args, "freq_max_thz", None)
     freq_step_thz = getattr(args, "freq_step_thz", None)
+    bz_folded = _validate_bz_folded(args.bz_folded)
+    bz_fold_active = bool(np.any(bz_folded != 1))
 
     if method != "corr" and getattr(args, "save_corr_plus", False):
         raise ValueError("--save-corr-plus is only available when method='corr'")
+    if bz_fold_active and getattr(args, "save_corr_plus", False):
+        raise ValueError("--save-corr-plus cannot be combined with --bz-folded because folding is applied to S(q,w)")
     if method == "corr" and freq_mode != "fft":
         raise ValueError("--freq-mode direct is only available when method='periodogram'")
     if freq_mode == "direct":
@@ -196,17 +250,46 @@ def main(
         np.asarray(args.supercell, dtype=int),
     )
     primitive_reciprocal = reciprocal_lattice_from_real(primitive_lattice)
+    q_input_reciprocal = primitive_reciprocal
+    if bz_fold_active:
+        q_input_reciprocal = folded_reciprocal_lattice_from_primitive(
+            primitive_reciprocal,
+            bz_folded,
+        )
     if is_root:
         print("[INFO] Primitive-cell lattice vectors inferred from --supercell (rows):")
         for idx, vec in enumerate(primitive_lattice, start=1):
             print(f"[INFO]   a{idx}^prim = ({vec[0]: .10f}, {vec[1]: .10f}, {vec[2]: .10f})")
-        print("[INFO] Primitive-cell reciprocal lattice vectors used to interpret qfile (rows):")
+        print("[INFO] Primitive-cell reciprocal lattice vectors (rows):")
         for idx, vec in enumerate(primitive_reciprocal, start=1):
             print(f"[INFO]   b{idx}^prim = ({vec[0]: .10f}, {vec[1]: .10f}, {vec[2]: .10f})")
+        if bz_fold_active:
+            print(f"[INFO] Folded-BZ factors: {tuple(int(v) for v in bz_folded)}")
+            print("[INFO] Folded-BZ reciprocal lattice vectors used to interpret qfile (rows):")
+            for idx, vec in enumerate(q_input_reciprocal, start=1):
+                print(f"[INFO]   b{idx}^fold = ({vec[0]: .10f}, {vec[1]: .10f}, {vec[2]: .10f})")
+        else:
+            print("[INFO] Primitive-cell reciprocal lattice vectors used to interpret qfile (rows):")
+            for idx, vec in enumerate(q_input_reciprocal, start=1):
+                print(f"[INFO]   b{idx}^input = ({vec[0]: .10f}, {vec[1]: .10f}, {vec[2]: .10f})")
 
-    q_frac_prim, q_node_indices, q_node_labels = load_q_file(args.qfile, args.points_per_segment)
-    q_cart = frac_to_cart_q(q_frac_prim, primitive_reciprocal)
-    q_frac_engine = cart_to_frac_q(q_cart, calc.reciprocal_lattice)
+    q_frac_input, q_node_indices, q_node_labels = load_q_file(args.qfile, args.points_per_segment)
+    q_cart_input = frac_to_cart_q(q_frac_input, q_input_reciprocal)
+    q_frac_engine_input = cart_to_frac_q(q_cart_input, calc.reciprocal_lattice)
+    if bz_fold_active:
+        q_frac_prim_eval, fold_shifts = unfold_q_path_from_folded_bz(q_frac_input, bz_folded)
+        q_frac_engine_eval = cart_to_frac_q(
+            frac_to_cart_q(q_frac_prim_eval, primitive_reciprocal),
+            calc.reciprocal_lattice,
+        )
+        q_fold_multiplicity = int(fold_shifts.shape[0])
+        q_node_indices_eval = None
+        q_node_labels_eval = None
+    else:
+        q_frac_engine_eval = q_frac_engine_input
+        q_fold_multiplicity = 1
+        q_node_indices_eval = q_node_indices
+        q_node_labels_eval = q_node_labels
 
     if is_root:
         print(f"[INFO] Frames: {calc.spins.shape[0]}")
@@ -215,7 +298,14 @@ def main(
             print(f"[INFO] Field threshold filter enabled: {args.spin_threshold:g}")
         print(f"[INFO] Field columns: {tuple(args.field_columns)}")
         print(f"[INFO] Projection mode: {args.projection}")
-        print(f"[INFO] q-points: {q_frac_engine.shape[0]}")
+        if bz_fold_active:
+            print(f"[INFO] Folded-path q-points: {q_frac_input.shape[0]}")
+            print(
+                f"[INFO] Unfolded q-points evaluated: {q_frac_engine_eval.shape[0]} "
+                f"({q_fold_multiplicity} per folded q)"
+            )
+        else:
+            print(f"[INFO] q-points: {q_frac_engine_eval.shape[0]}")
         if calc.timesteps.size >= 2:
             dstep = np.diff(calc.timesteps)
             if not np.all(dstep == dstep[0]):
@@ -239,7 +329,7 @@ def main(
 
     if method == "corr":
         result = calc.compute_correlation_spectrum(
-            q_frac=q_frac_engine,
+            q_frac=q_frac_engine_eval,
             dt_fs=args.dt_fs,
             components=args.components,
             projection=args.projection,
@@ -252,12 +342,12 @@ def main(
             progress=args.progress,
             progress_reports=args.progress_reports,
             mpi_comm=mpi_comm,
-            q_node_indices=q_node_indices,
-            q_node_labels=q_node_labels,
+            q_node_indices=q_node_indices_eval,
+            q_node_labels=q_node_labels_eval,
         )
     else:
         result = calc.compute_periodogram(
-            q_frac=q_frac_engine,
+            q_frac=q_frac_engine_eval,
             dt_fs=args.dt_fs,
             components=args.components,
             projection=args.projection,
@@ -272,12 +362,50 @@ def main(
             progress=args.progress,
             progress_reports=args.progress_reports,
             mpi_comm=mpi_comm,
-            q_node_indices=q_node_indices,
-            q_node_labels=q_node_labels,
+            q_node_indices=q_node_indices_eval,
+            q_node_labels=q_node_labels_eval,
         )
 
     if not is_root:
         return
+
+    if bz_fold_active:
+        result = SQWResult(
+            timesteps=result.timesteps,
+            q_frac=q_frac_engine_input,
+            q_vectors=q_cart_input,
+            freq_thz=result.freq_thz,
+            sqw=fold_sqw_by_max(
+                result.sqw,
+                nq_folded=q_frac_input.shape[0],
+                multiplicity=q_fold_multiplicity,
+            ),
+            lattice=result.lattice,
+            reciprocal_lattice=result.reciprocal_lattice,
+            dt_fs=result.dt_fs,
+            components=result.components,
+            q_frac_input=q_frac_input,
+            q_input_reciprocal_lattice=q_input_reciprocal,
+            bz_folded=bz_folded.astype(np.int64, copy=True),
+            q_fold_multiplicity=q_fold_multiplicity,
+            field_columns=result.field_columns,
+            projection=result.projection,
+            freq_mode=result.freq_mode,
+            translation_repeats=result.translation_repeats,
+            q_node_indices=q_node_indices,
+            q_node_labels=q_node_labels,
+            corr_plus=None,
+            corr_norm=result.corr_norm,
+        )
+        print(
+            f"[INFO] Folded unfolded branches back onto {q_frac_input.shape[0]} q-points "
+            f"with max over {q_fold_multiplicity} branches"
+        )
+    else:
+        result.q_frac_input = q_frac_input
+        result.q_input_reciprocal_lattice = q_input_reciprocal
+        result.bz_folded = bz_folded.astype(np.int64, copy=True)
+        result.q_fold_multiplicity = q_fold_multiplicity
 
     output_file = args.output if args.output is not None else default_path_output_for_method(method)
     if args.save_npz:

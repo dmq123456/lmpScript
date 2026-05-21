@@ -37,7 +37,10 @@ def _add_dumpfile_arg(parser: argparse.ArgumentParser) -> None:
 def _add_qfile_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "qfile",
-        help="q file in primitive-cell fractional reciprocal coordinates; either direct q points or labeled path nodes",
+        help=(
+            "q file in primitive-cell fractional reciprocal coordinates; either direct q points or labeled "
+            "path nodes. When --bz-folded is set, coordinates are interpreted in the folded-BZ reciprocal basis"
+        ),
     )
 
 
@@ -61,6 +64,21 @@ def _add_supercell_arg(parser: argparse.ArgumentParser, help_text: str | None = 
             "Supercell expansion relative to the primitive cell, e.g. --supercell 20 20 1"
             if help_text is None
             else help_text
+        ),
+    )
+
+
+def _add_bz_folded_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--bz-folded",
+        type=int,
+        nargs=3,
+        metavar=("FX", "FY", "FZ"),
+        default=(1, 1, 1),
+        help=(
+            "Fold the primitive-cell Brillouin zone by integer factors along each reciprocal axis, "
+            "e.g. --bz-folded 2 2 1. The q file is then interpreted in the folded-BZ reciprocal basis "
+            "and equivalent unfolded q-points are reduced with max intensity at each frequency"
         ),
     )
 
@@ -387,6 +405,7 @@ def build_path_arg_parser(
         help="Interpolation points per labeled path segment (default: 41)",
     )
     _add_supercell_arg(parser)
+    _add_bz_folded_arg(parser)
     _add_dt_fs_arg(parser)
     _add_translation_repeats_arg(parser)
     _add_dtype_arg(parser)
