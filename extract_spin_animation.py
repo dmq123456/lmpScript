@@ -78,6 +78,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=20,
         help="Approximate number of progress updates to print per stage (default: 20)",
     )
+    parser.add_argument(
+        "--single-layer",
+        action="store_true",
+        help="Render a single layer (skip bilayer splitting by z-midpoint).",
+    )
     return parser
 
 
@@ -250,7 +255,7 @@ def load_selected_frames(
     return selected_frames, total_frames_read
 
 
-def render_frame_rgba(frame_data: dict[str, object], color_component: str) -> np.ndarray:
+def render_frame_rgba(frame_data: dict[str, object], color_component: str, single_layer: bool = False) -> np.ndarray:
     x = np.asarray(frame_data["x"], dtype=float)
     y = np.asarray(frame_data["y"], dtype=float)
     z = np.asarray(frame_data["z"], dtype=float)
@@ -258,14 +263,19 @@ def render_frame_rgba(frame_data: dict[str, object], color_component: str) -> np
     sy = np.asarray(frame_data["sy"], dtype=float)
     sz = np.asarray(frame_data["sz"], dtype=float)
 
-    up, dn = split_layers(z)
     color_values, color_label = select_color_component(color_component, sx, sy, sz)
 
-    fig, axs = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
-    mappable = plot_layer(axs[0], x[up], y[up], sx[up], sy[up], color_values[up], "Top Layer")
-    mappable = plot_layer(axs[1], x[dn], y[dn], sx[dn], sy[dn], color_values[dn], "Bottom Layer")
+    if single_layer:
+        fig, ax = plt.subplots(1, 1, figsize=(7, 5), constrained_layout=True)
+        mappable = plot_layer(ax, x, y, sx, sy, color_values, "Spin Texture")
+        cbar = fig.colorbar(mappable, ax=ax, shrink=0.85, pad=0.03)
+    else:
+        up, dn = split_layers(z)
+        fig, axs = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
+        mappable = plot_layer(axs[0], x[up], y[up], sx[up], sy[up], color_values[up], "Top Layer")
+        mappable = plot_layer(axs[1], x[dn], y[dn], sx[dn], sy[dn], color_values[dn], "Bottom Layer")
+        cbar = fig.colorbar(mappable, ax=axs, shrink=0.85, pad=0.03)
 
-    cbar = fig.colorbar(mappable, ax=axs, shrink=0.85, pad=0.03)
     cbar.set_label(color_label, fontsize=18)
     cbar.ax.tick_params(labelsize=13)
 
@@ -281,8 +291,8 @@ def render_frame_rgba(frame_data: dict[str, object], color_component: str) -> np
     return rgba.copy()
 
 
-def render_frame_png_bytes(frame_data: dict[str, object], color_component: str) -> bytes:
-    image = Image.fromarray(render_frame_rgba(frame_data, color_component))
+def render_frame_png_bytes(frame_data: dict[str, object], color_component: str, single_layer: bool = False) -> bytes:
+    image = Image.fromarray(render_frame_rgba(frame_data, color_component, single_layer))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
@@ -335,6 +345,7 @@ def render_images_mpi(
     mpi_comm: object | None,
     mpi_rank: int,
     mpi_size: int,
+    single_layer: bool = False,
 ) -> list[Image.Image] | None:
     if mpi_comm is None:
         if frames is None:
@@ -344,7 +355,7 @@ def render_images_mpi(
         render_start = time.perf_counter()
         images: list[Image.Image] = []
         for idx, frame_data in enumerate(frames):
-            images.append(Image.fromarray(render_frame_rgba(frame_data, color_component)))
+            images.append(Image.fromarray(render_frame_rgba(frame_data, color_component, single_layer)))
             done = idx + 1
             if progress and (done % report_interval == 0 or done == total_frames):
                 _report_render_progress_mpi(
@@ -371,7 +382,7 @@ def render_images_mpi(
     for iloc in range(max_local_steps):
         if iloc < local_total:
             frame_idx, frame_data = local_tasks[iloc]
-            local_results.append((frame_idx, render_frame_png_bytes(frame_data, color_component)))
+            local_results.append((frame_idx, render_frame_png_bytes(frame_data, color_component, single_layer)))
 
         step = iloc + 1
         if progress and (step % report_interval == 0 or step == max_local_steps):
@@ -456,6 +467,9 @@ def main() -> None:
         print(f"[INFO] FPS             : {args.fps:g}")
         print("[INFO] Rendering GIF frames...")
 
+    if is_root:
+        print(f"[INFO] Layer mode     : {'single' if args.single_layer else 'bilayer'}")
+
     images = render_images_mpi(
         frames=frames,
         color_component=args.color_component,
@@ -464,6 +478,7 @@ def main() -> None:
         mpi_comm=mpi_comm,
         mpi_rank=mpi_rank,
         mpi_size=mpi_size,
+        single_layer=args.single_layer,
     )
     if not is_root:
         return
