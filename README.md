@@ -11,11 +11,16 @@ Two spectrum estimators are provided:
 ## Quick start
 
 ```bash
-# Spin-wave S(q,w) along a high-symmetry q-path
-python sqw_spin.py dump.lammpstrj qpath.txt          \
-    --field-columns c_outsp[1] c_outsp[2] c_outsp[3] \
-    --supercell 20 20 1 --dt-fs 2.0                   \
-    --components x --use-instantaneous-pos             \
+# 1. Generate a test dump (uniform spin precession at 4 THz)
+python examples/generate_oscillating_dump.py   \
+    --supercell 10 10 1 --spin-freqs 4.0         \
+    --nframes 10000 --output test.lammpstrj
+
+# 2. Compute S(q,w) along a high-symmetry q-path
+python sqw_spin.py test.lammpstrj examples/qpath.txt  \
+    --field-columns c_outsp[1] c_outsp[2] c_outsp[3]  \
+    --supercell 10 10 1 --dt-fs 2.0                    \
+    --components x --use-instantaneous-pos              \
     --plot --max-freq-thz 40
 ```
 
