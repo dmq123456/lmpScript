@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
-Generate a LAMMPS dump file with a hexagonal lattice, oscillating spins,
-and oscillating atomic positions.  No input files are read – everything
+Generate a LAMMPS dump file with a hexagonal lattice, spin precession,
+and atomic-position oscillation.  No input files are read — everything
 is built from the primitive cell (one atom at the origin).
+
+Both spin and position waves support finite wavevectors (propagating
+modes) in addition to the q=0 uniform case.
 
 Usage examples:
 
-  # Spin precession at 4 THz, static positions
+  # Uniform (q=0) spin precession at 4 THz, static positions
   python generate_oscillating_dump.py --supercell 10 10 1 --spin-freqs 4.0
 
-  # Spin at 4 THz  +  position oscillation along y at 4 THz (0.1 Å ampl.)
-  python generate_oscillating_dump.py --supercell 10 10 1   \
-      --spin-freqs 4.0 --pos-dir y --pos-freq 4.0 --pos-amp 0.1
-
-  # Multiple spin frequencies  +  position oscillation along x
+  # Propagating spin wave at the M point (1/2, 1/2, 0)
   python generate_oscillating_dump.py --supercell 20 20 1   \
-      --spin-freqs 4.0 12.0 --spin-amps 1.0 0.3            \
-      --pos-dir x --pos-freq 4.0 --pos-amp 0.05             \
-      --nframes 5000 --dt-fs 2.0
+      --spin-freqs 4.0 --spin-wavevector 0.5 0.5 0.0
+
+  # Spin + position oscillation, both at finite q
+  python generate_oscillating_dump.py --supercell 20 20 1   \
+      --spin-freqs 4.0 --spin-wavevector 0.5 0.5 0.0        \
+      --pos-dir y --pos-freq 4.0 --pos-wavevector 0.0 0.5 0.0
 """
 
 from __future__ import annotations
@@ -39,6 +41,20 @@ def build_primitive_lattice(a: float = 4.0, c: float = 80.0) -> np.ndarray:
             [a, 0.0, 0.0],
             [-a / 2.0, a * np.sqrt(3.0) / 2.0, 0.0],
             [0.0, 0.0, c],
+        ],
+        dtype=float,
+    )
+
+
+def reciprocal_lattice(real_lattice: np.ndarray) -> np.ndarray:
+    """Return reciprocal lattice vectors (rows) for a given real-space lattice."""
+    a1, a2, a3 = real_lattice
+    vol = float(np.dot(a1, np.cross(a2, a3)))
+    return np.array(
+        [
+            2.0 * np.pi * np.cross(a2, a3) / vol,
+            2.0 * np.pi * np.cross(a3, a1) / vol,
+            2.0 * np.pi * np.cross(a1, a2) / vol,
         ],
         dtype=float,
     )
@@ -126,6 +142,12 @@ def main() -> None:
         metavar="AMP",
         help="Amplitude per spin frequency (default 1.0 each)",
     )
+    parser.add_argument(
+        "--spin-wavevector", type=float, nargs=3, default=[0.0, 0.0, 0.0],
+        metavar=("QX", "QY", "QZ"),
+        help="Spin wavevector in primitive-cell fractional reciprocal coords "
+        "(default 0 0 0 = uniform q=0 mode)",
+    )
 
     # position oscillation
     parser.add_argument(
@@ -139,6 +161,12 @@ def main() -> None:
     parser.add_argument(
         "--pos-amp", type=float, default=0.1,
         help="Position oscillation amplitude in Angstrom, default 0.1",
+    )
+    parser.add_argument(
+        "--pos-wavevector", type=float, nargs=3, default=[0.0, 0.0, 0.0],
+        metavar=("QX", "QY", "QZ"),
+        help="Position wavevector in primitive-cell fractional reciprocal coords "
+        "(default 0 0 0 = uniform q=0 mode)",
     )
 
     # time axis
@@ -162,29 +190,39 @@ def main() -> None:
     nx, ny, nz = args.supercell
 
     # --- lattice & positions -------------------------------------------------
-    prim_lattice = build_primitive_lattice(args.lattice_constant,
-                                           args.layer_spacing)
+    prim_lattice = build_primitive_lattice(args.lattice_constant, args.layer_spacing)
+    prim_recip = reciprocal_lattice(prim_lattice)
     super_lattice = build_supercell_lattice(prim_lattice, nx, ny, nz)
     positions_eq = generate_atomic_positions(prim_lattice, nx, ny, nz)
     natoms = len(positions_eq)
 
-    # --- spin frequencies & amplitudes ---------------------------------------
+    # --- spin frequencies, amplitudes & wavevector ----------------------------
     spin_freqs = np.asarray(args.spin_freqs, dtype=float)
     if args.spin_amps is None:
         spin_amps = np.ones_like(spin_freqs)
     else:
         spin_amps = np.asarray(args.spin_amps, dtype=float)
         if len(spin_amps) != len(spin_freqs):
-            raise ValueError(
-                "--spin-amps must have the same length as --spin-freqs"
-            )
+            raise ValueError("--spin-amps must have the same length as --spin-freqs")
 
+    spin_q_frac = np.asarray(args.spin_wavevector, dtype=float)
+    spin_q_cart = spin_q_frac @ prim_recip
     omega_spin = 2.0 * np.pi * spin_freqs * 1e12  # rad / s
 
-    # --- position oscillation ------------------------------------------------
-    pos_dir_idx: int | None = {"x": 0, "y": 1, "z": 2}.get(args.pos_dir) if args.pos_dir else None
+    # precompute q·r_i for each atom (spin)
+    spin_qr = positions_eq @ spin_q_cart  # shape (natoms,)
+
+    # --- position oscillation -------------------------------------------------
+    pos_dir_idx: int | None = (
+        {"x": 0, "y": 1, "z": 2}.get(args.pos_dir) if args.pos_dir else None
+    )
     omega_pos = 2.0 * np.pi * args.pos_freq * 1e12  # rad / s
 
+    pos_q_frac = np.asarray(args.pos_wavevector, dtype=float)
+    pos_q_cart = pos_q_frac @ prim_recip
+    pos_qr = positions_eq @ pos_q_cart  # shape (natoms,)
+
+    # --- time step -----------------------------------------------------------
     dt_s = args.dt_fs * 1e-15
 
     # --- box bounds ----------------------------------------------------------
@@ -196,17 +234,24 @@ def main() -> None:
 
     # --- report --------------------------------------------------------------
     print(f"Primitive lattice (rows):\n{prim_lattice}")
+    print(f"Primitive reciprocal lattice (rows):\n{prim_recip}")
     print(f"Supercell : {nx} x {ny} x {nz}")
     print(f"Natoms    : {natoms}")
-    print(f"Spin freqs (THz) : {spin_freqs.tolist()}")
-    print(f"Spin amps        : {spin_amps.tolist()}")
+    print(f"Spin freqs (THz)      : {spin_freqs.tolist()}")
+    print(f"Spin amps             : {spin_amps.tolist()}")
+    print(f"Spin wavevector (frac): {spin_q_frac.tolist()}")
+    print(f"Spin wavevector (cart): {spin_q_cart.tolist()}")
     if pos_dir_idx is not None:
-        print(f"Pos oscillation  : dir={args.pos_dir}, "
-              f"freq={args.pos_freq} THz, amp={args.pos_amp} Å")
+        print(f"Pos dir    : {args.pos_dir}")
+        print(f"Pos freq   : {args.pos_freq} THz, amp = {args.pos_amp} Å")
+        print(f"Pos wavevector (frac): {pos_q_frac.tolist()}")
+        print(f"Pos wavevector (cart): {pos_q_cart.tolist()}")
     else:
-        print("Pos oscillation  : none (static positions)")
-    print(f"dt = {args.dt_fs} fs  |  nframes = {args.nframes}  |  "
-          f"total time = {args.nframes * args.dt_fs / 1000:.1f} ps")
+        print("Pos oscillation : none (static positions)")
+    print(
+        f"dt = {args.dt_fs} fs  |  nframes = {args.nframes}  |  "
+        f"total time = {args.nframes * args.dt_fs / 1000:.1f} ps"
+    )
     print(f"Nyquist freq     : {0.5 / dt_s / 1e12:.1f} THz")
     print(f"Freq resolution  : {1.0 / (args.nframes * dt_s) / 1e12:.4f} THz")
 
@@ -214,13 +259,6 @@ def main() -> None:
     with open(args.output, "w") as fh:
         for frame in range(args.nframes):
             t = frame * dt_s
-
-            # spin: circular precession in xy-plane, Sz = 0
-            sx = float(np.sum(spin_amps * np.cos(omega_spin * t)))
-            sy = float(np.sum(spin_amps * np.sin(omega_spin * t)))
-
-            # position displacement
-            disp = args.pos_amp * np.sin(omega_pos * t) if pos_dir_idx is not None else 0.0
 
             fh.write("ITEM: TIMESTEP\n")
             fh.write(f"{frame}\n")
@@ -231,14 +269,34 @@ def main() -> None:
                 fh.write(line + "\n")
             fh.write(atom_header + "\n")
 
-            for pos_eq in positions_eq:
+            for i, pos_eq in enumerate(positions_eq):
                 x, y, z = pos_eq
+
+                # spin: circular precession in xy-plane, Sz = 0
+                #   phase_i = q·r_i - ω t
+                spin_phase = spin_qr[i]
+                sx = float(np.sum(
+                    spin_amps * np.cos(spin_phase - omega_spin * t)
+                ))
+                sy = float(np.sum(
+                    spin_amps * np.sin(spin_phase - omega_spin * t)
+                ))
+
+                # position displacement
+                #   phase_i = q·r_i - ω t
+                if pos_dir_idx is not None:
+                    pos_phase = pos_qr[i] - omega_pos * t
+                    disp = args.pos_amp * np.sin(pos_phase)
+                else:
+                    disp = 0.0
+
                 if pos_dir_idx == 0:
                     x += disp
                 elif pos_dir_idx == 1:
                     y += disp
                 elif pos_dir_idx == 2:
                     z += disp
+
                 fh.write(
                     f"1 C {x:.10f} {y:.10f} {z:.10f} "
                     f"{sx:.10f} {sy:.10f} 0.0000000000\n"
