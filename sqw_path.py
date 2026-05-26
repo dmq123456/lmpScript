@@ -152,9 +152,9 @@ def plot_sqw(
     png_file = f"{prefix}.png"
     eps_file = f"{prefix}.eps"
     plt.savefig(png_file, dpi=300, bbox_inches="tight")
-    plt.savefig(eps_file, bbox_inches="tight")
+    # plt.savefig(eps_file, bbox_inches="tight")
     print(f"[INFO] Plot saved to: {png_file}")
-    print(f"[INFO] Plot saved to: {eps_file}")
+    # print(f"[INFO] Plot saved to: {eps_file}")
 
 
 def build_arg_parser(
