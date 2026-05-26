@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.sqwcache.npz
+*.png
+*.eps
+.DS_Store

@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqw_args import build_bz_map_arg_parser
 from sqw_core import (

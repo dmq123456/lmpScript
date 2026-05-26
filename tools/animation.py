@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -15,8 +16,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
-from extract_frame_to_xsf import _read_one_frame, plot_layer, select_color_component, split_layers
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from sqw_mpi import resolve_mpi_comm
+from xsf_plot import _read_one_frame, plot_layer, select_color_component, split_layers
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
