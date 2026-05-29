@@ -5,3 +5,5 @@ __pycache__/
 *.png
 *.eps
 .DS_Store
+*.lammpstrj
+*.npz

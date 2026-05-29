@@ -101,11 +101,11 @@ def plot_bz_maps(
     fig.suptitle(title)
     prefix = str(Path(outfile).with_suffix(""))
     png_file = f"{prefix}.png"
-    eps_file = f"{prefix}.eps"
+    # eps_file = f"{prefix}.eps"
     fig.savefig(png_file, dpi=300, bbox_inches="tight")
-    fig.savefig(eps_file, bbox_inches="tight")
+    # fig.savefig(eps_file, bbox_inches="tight")
     print(f"[INFO] Plot saved to: {png_file}")
-    print(f"[INFO] Plot saved to: {eps_file}")
+    # print(f"[INFO] Plot saved to: {eps_file}")
 
 
 def main() -> None:

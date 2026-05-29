@@ -531,6 +531,55 @@ def build_bz_map_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_integrated_arg_parser() -> argparse.ArgumentParser:
+    """Parser for frequency-integrated S(q) = ∫ S(q,ω) dω on a 2D BZ grid."""
+    parser = argparse.ArgumentParser(
+        description="Compute the frequency-integrated S(q) on a 2D BZ grid"
+    )
+    _add_dumpfile_arg(parser)
+    _add_supercell_arg(parser)
+    _add_dt_fs_arg(parser)
+    _add_translation_repeats_arg(parser)
+    _add_dtype_arg(parser)
+    _add_frame_selection_args(parser)
+    _add_field_columns_arg(parser)
+    _add_projection_arg(parser)
+    _add_components_arg(
+        parser,
+        "Cartesian components to include when --projection cartesian (default: xyz)",
+    )
+    _add_use_instantaneous_pos_arg(
+        parser,
+        "Use instantaneous positions in exp(i q·r_j(t))",
+    )
+    _add_no_subtract_mean_arg(
+        parser,
+        "Do not subtract the time average before FFT",
+    )
+    _add_window_arg(parser, "Window function (default: none)")
+    _add_progress_args(parser)
+    _add_cache_args(parser)
+    _add_spin_threshold_arg(parser)
+    _add_bz_grid_args(parser,
+        nh_help="q-grid points along b1 (default: 81)",
+        nk_help="q-grid points along b2 (default: 81)",
+        frac_limit_help="Half-width of sampled rectangle in frac units (default: 0.6)",
+    )
+    _add_freq_range_args(parser,
+        min_help="Lower bound for frequency integration (default: 0 THz)",
+        max_help="Upper bound for frequency integration (default: Nyquist)",
+    )
+    _add_save_npz_arg(parser, "Write integrated S(q) to --output .npz")
+    _add_output_arg(parser, "sqw_int.npz",
+                    "Output .npz file path (default: sqw_int.npz)")
+    _add_plot_arg(parser, "Plot the integrated S(q) map")
+    _add_plot_file_arg(parser, "sqw_int",
+                       "Plot filename prefix (default: sqw_int)")
+    parser.add_argument("--cbar-min", type=float, default=None, help="Colorbar minimum")
+    parser.add_argument("--cbar-max", type=float, default=None, help="Colorbar maximum")
+    return parser
+
+
 def build_magnon_dos_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
