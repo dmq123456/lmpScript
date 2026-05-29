@@ -68,8 +68,10 @@ def plot_integrated_map(
     sqw_int: np.ndarray,
     outfile: str,
     freq_range: str,
-    cbar_min: float | None = None,
-    cbar_max: float | None = None,
+    components: str = "xyz",
+    projection: str = "cartesian",
+    cbar_min: Optional[float] = None,
+    cbar_max: Optional[float] = None,
 ) -> None:
     import matplotlib
     matplotlib.use("Agg")
@@ -85,7 +87,8 @@ def plot_integrated_map(
     if cbar_max is not None:
         mesh_kw["vmax"] = cbar_max
 
-    mesh = ax.tripcolor(triang, sqw_int, **mesh_kw)
+    # mesh = ax.tripcolor(triang, sqw_int, **mesh_kw)
+    mesh = ax.tripcolor(triang, np.log10(np.maximum(sqw_int, 1e-12)), **mesh_kw)
     ax.triplot(triang, color="w", linewidth=0.1, alpha=0.15)
 
     ax.plot(0, 0, "o", markersize=5, color="cyan", markeredgecolor="k")
@@ -95,7 +98,14 @@ def plot_integrated_map(
     ax.set_xlabel(r"$q_x$ (1/Å)")
     ax.set_ylabel(r"$q_y$ (1/Å)")
     ax.set_aspect("equal")
-    ax.set_title(f"∫ S(q,ω) dω   {freq_range}")
+
+    if projection == "cartesian":
+        detail = f"components={components}"
+    else:
+        detail = f"projection={projection}"
+    # ax.set_title(f"∫ S(q,ω) dω   {freq_range}   ({detail})")
+    # ax.set_title(f"∫ S(q,ω) dω  ({detail})")
+    ax.set_title(f"log10{{∫ S(q,ω) dω}}  ({detail})")
 
     cbar = fig.colorbar(mesh, ax=ax)
     cbar.set_label("Intensity (arb. units)")
@@ -155,19 +165,36 @@ def main() -> None:
               f"{args.freq_max_thz or 'Nyquist'}] THz")
         print(f"[INFO] Components: {args.components},  projection: {args.projection}")
 
-    result = calc.compute_periodogram(
-        q_frac=q_engine_inside,
-        dt_fs=args.dt_fs,
-        components=args.components,
-        projection=args.projection,
-        use_instantaneous_pos=args.use_instantaneous_pos,
-        translation_repeats=tuple(args.translation_repeats),
-        subtract_mean=(not args.no_subtract_mean),
-        window=args.window,
-        progress=args.progress,
-        progress_reports=args.progress_reports,
-        mpi_comm=mpi_comm,
-    )
+    if args.method == "corr":
+        result = calc.compute_correlation_spectrum(
+            q_frac=q_engine_inside,
+            dt_fs=args.dt_fs,
+            components=args.components,
+            projection=args.projection,
+            use_instantaneous_pos=args.use_instantaneous_pos,
+            translation_repeats=tuple(args.translation_repeats),
+            subtract_mean=(not args.no_subtract_mean),
+            window=args.window,
+            corr_norm=args.corr_norm,
+            return_corr_plus=False,
+            progress=args.progress,
+            progress_reports=args.progress_reports,
+            mpi_comm=mpi_comm,
+        )
+    else:
+        result = calc.compute_periodogram(
+            q_frac=q_engine_inside,
+            dt_fs=args.dt_fs,
+            components=args.components,
+            projection=args.projection,
+            use_instantaneous_pos=args.use_instantaneous_pos,
+            translation_repeats=tuple(args.translation_repeats),
+            subtract_mean=(not args.no_subtract_mean),
+            window=args.window,
+            progress=args.progress,
+            progress_reports=args.progress_reports,
+            mpi_comm=mpi_comm,
+        )
 
     if not is_root:
         return
@@ -215,6 +242,8 @@ def main() -> None:
             qx_inside, qy_inside, sqw_int,
             outfile=args.plot_file,
             freq_range=freq_str,
+            components=args.components,
+            projection=args.projection,
             cbar_min=args.cbar_min,
             cbar_max=args.cbar_max,
         )

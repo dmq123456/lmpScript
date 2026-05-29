@@ -537,6 +537,7 @@ def build_integrated_arg_parser() -> argparse.ArgumentParser:
         description="Compute the frequency-integrated S(q) on a 2D BZ grid"
     )
     _add_dumpfile_arg(parser)
+    _add_method_arg(parser)
     _add_supercell_arg(parser)
     _add_dt_fs_arg(parser)
     _add_translation_repeats_arg(parser)
@@ -558,6 +559,11 @@ def build_integrated_arg_parser() -> argparse.ArgumentParser:
     )
     _add_window_arg(parser, "Window function (default: none)")
     _add_progress_args(parser)
+    _add_corr_args(
+        parser,
+        corr_norm_help="Correlation normalization when --method corr (default: biased)",
+        include_save_corr_plus=False,
+    )
     _add_cache_args(parser)
     _add_spin_threshold_arg(parser)
     _add_bz_grid_args(parser,
@@ -580,12 +586,12 @@ def build_integrated_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_magnon_dos_arg_parser() -> argparse.ArgumentParser:
+def build_dos_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute magnon DOS using two routes: "
+            "Compute DOS using two routes: "
             "(1) q-averaged S(q,w) on 2D first BZ, "
-            "(2) Fourier transform of spin autocorrelation."
+            "(2) Fourier transform of velocity/spin autocorrelation."
         )
     )
     _add_dumpfile_arg(parser)
@@ -661,21 +667,21 @@ def build_magnon_dos_arg_parser() -> argparse.ArgumentParser:
         help="DOS normalization mode (default: max)",
     )
     _add_save_npz_arg(parser, "Write output arrays to --output .npz")
-    _add_output_arg(parser, "magnon_dos.npz", "Output npz path")
+    _add_output_arg(parser, "sqw_dos.npz", "Output npz path")
     _add_plot_arg(parser, "Plot DOS curves")
     parser.add_argument(
         "--plot-raw",
         action="store_true",
         help="Also plot raw DOS curves before smoothing/normalization",
     )
-    _add_plot_file_arg(parser, "magnon_dos", "Plot filename prefix")
+    _add_plot_file_arg(parser, "sqw_dos", "Plot filename prefix")
     _add_mev_arg(parser)
     return parser
 
 
 __all__ = [
     "build_bz_map_arg_parser",
-    "build_magnon_dos_arg_parser",
+    "build_dos_arg_parser",
     "build_path_arg_parser",
     "default_path_output_for_method",
 ]

@@ -1,6 +1,6 @@
 RUN_SPIN=0        # 1=run, 0=pass
-RUN_BZ_MAP=1      # 1=run, 0=pass
-RUN_MAGNON=0      # 1=run, 0=pass
+RUN_BZ_MAP=0      # 1=run, 0=pass
+RUN_DOS=1      # 1=run, 0=pass
 RUN_PLOT=0        # 1=run, 0=pass
 
 starts=0
@@ -108,6 +108,25 @@ for strj in s4;do
                   --cbar-min 0 --cbar-max 30000
             fi
 
+            if [ $RUN_DOS -eq 1 ]; then
+                echo ">>> Running sqw_integrated.py for frames $start to $stop ..."
+                mpirun -np $ranks python ${sqw_path}/analysis/sqw_dos.py  $lammpstrj \
+                  --field-columns c_outsp[1] c_outsp[2] c_outsp[3] \
+                  --supercell 20 20 1 \
+                  --dt-fs "$dt" \
+                  --translation-repeats 10 10 1 \
+                  --dtype float32 \
+                  --frame-start "$start" \
+                  --frame-stop "$stop" \
+                  --nh 121 --nk 121  \
+                  --freq-min-thz 0   \
+                  --freq-max-thz 40  \
+                  --frame-step  1 \
+                  --components ${k} \
+                  --window none \
+                  --plot \
+                  --plot-file ${png}/"${strj}"-"${k}".png
+            fi
         done
 
 #                  --mev

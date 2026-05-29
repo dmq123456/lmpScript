@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqw_args import build_magnon_dos_arg_parser
+from sqw_args import build_dos_arg_parser
 from sqw_core import (
     THZ_TO_MEV,
     SpinStructureFactorCalculator,
@@ -25,7 +25,7 @@ from sqw_core import (
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    return build_magnon_dos_arg_parser()
+    return build_dos_arg_parser()
 
 
 def _window_array(size: int, window: str) -> np.ndarray:
@@ -218,27 +218,42 @@ def plot_dos_curves(
     fig, ax = plt.subplots(figsize=(7.2, 4.8), dpi=160)
     colors = ["#d62728", "#1f77b4", "#2ca02c", "#ff7f0e"]
 
+    mirror = len(curves) == 2
+
     for i, (label, freq_thz, raw, final) in enumerate(curves):
         color = colors[i % len(colors)]
         x = freq_thz * THZ_TO_MEV if use_mev else freq_thz
+        sign = 1.0 if i == 0 else -1.0
+        y_raw = sign * raw
+        y_final = sign * final
+
         if plot_raw and not np.allclose(raw, final):
-            ax.plot(x, raw, color=color, alpha=0.35, linewidth=1.0)
-        ax.plot(x, final, color=color, linewidth=2.0, label=label)
+            ax.plot(x, y_raw, color=color, alpha=0.35, linewidth=1.0)
+        ax.plot(x, y_final, color=color, linewidth=2.0, label=label)
+
+    if mirror:
+        ax.axhline(y=0, color="k", linewidth=0.6)
+        ymax = max(abs(v) for _, _, _, final in curves for v in (final.max(),))
+        for sign in (-1.0, 1.0):
+            ax.fill_between(
+                curves[0][1], 0, sign * ymax,
+                alpha=0.04, color="gray",
+            )
 
     ax.set_xlabel("Energy (meV)" if use_mev else "Frequency (THz)")
     ax.set_ylabel("DOS (arb. units)")
-    ax.set_title("Magnon DOS")
+    ax.set_title("DOS")
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     ax.legend(frameon=False)
 
     fig.tight_layout()
     prefix = str(Path(outfile).with_suffix(""))
     png_file = f"{prefix}.png"
-    eps_file = f"{prefix}.eps"
+    # eps_file = f"{prefix}.eps"
     fig.savefig(png_file, dpi=300, bbox_inches="tight")
-    fig.savefig(eps_file, bbox_inches="tight")
+    # fig.savefig(eps_file, bbox_inches="tight")
     print(f"[INFO] Plot saved to: {png_file}")
-    print(f"[INFO] Plot saved to: {eps_file}")
+    # print(f"[INFO] Plot saved to: {eps_file}")
 
 
 def main() -> None:
@@ -263,6 +278,8 @@ def main() -> None:
         cache_file=args.cache_file,
         spin_threshold=args.spin_threshold,
         field_columns=args.field_columns,
+        progress=args.progress,
+        progress_reports=args.progress_reports,
     )
 
     if is_root:
@@ -380,10 +397,14 @@ def main() -> None:
     if args.plot:
         curves: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
         if qavg_payload is not None:
-            curves.append(("qavg S(q,w)", qavg_payload["freq"], qavg_payload["dos_raw_sel"], qavg_payload["dos"]))
-        if autocorr_payload is not None:
+            sign = "+" if run_autocorr else ""
             curves.append(
-                ("autocorr FFT", autocorr_payload["freq"], autocorr_payload["dos_raw_sel"], autocorr_payload["dos"])
+                (f"{sign}qavg", qavg_payload["freq"], qavg_payload["dos_raw_sel"], qavg_payload["dos"])
+            )
+        if autocorr_payload is not None:
+            sign = "−" if run_qavg else ""  # minus sign
+            curves.append(
+                (f"{sign}autocorr", autocorr_payload["freq"], autocorr_payload["dos_raw_sel"], autocorr_payload["dos"])
             )
         if curves:
             plot_dos_curves(curves=curves, outfile=args.plot_file, use_mev=args.mev, plot_raw=args.plot_raw)
