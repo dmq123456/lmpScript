@@ -160,6 +160,30 @@ def _add_field_columns_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_mass_weight_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mass-weight",
+        action="store_true",
+        help=(
+            "Weight each atom's field contribution by sqrt(mass) before the spatial "
+            "Fourier sum (phonon spectral-energy-density convention). Default off, which "
+            "reproduces the unweighted spectrum appropriate for magnons. Requires --masses "
+            "and a 'type' column in the dump."
+        ),
+    )
+    parser.add_argument(
+        "--masses",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="M",
+        help=(
+            "Atomic mass for each LAMMPS atom type, ordered by type id (mass of type 1 "
+            "first). Required when --mass-weight is set; ignored otherwise."
+        ),
+    )
+
+
 def _add_projection_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--projection",
@@ -411,6 +435,7 @@ def build_path_arg_parser(
     _add_dtype_arg(parser)
     _add_frame_selection_args(parser)
     _add_field_columns_arg(parser)
+    _add_mass_weight_args(parser)
     _add_projection_arg(parser)
     _add_components_arg(
         parser,
@@ -484,6 +509,7 @@ def build_bz_map_arg_parser() -> argparse.ArgumentParser:
     _add_dtype_arg(parser)
     _add_frame_selection_args(parser)
     _add_field_columns_arg(parser)
+    _add_mass_weight_args(parser)
     _add_projection_arg(parser)
     _add_components_arg(
         parser,
@@ -544,6 +570,7 @@ def build_integrated_arg_parser() -> argparse.ArgumentParser:
     _add_dtype_arg(parser)
     _add_frame_selection_args(parser)
     _add_field_columns_arg(parser)
+    _add_mass_weight_args(parser)
     _add_projection_arg(parser)
     _add_components_arg(
         parser,
@@ -621,6 +648,7 @@ def build_dos_arg_parser() -> argparse.ArgumentParser:
         step_help="Keep one frame every N selected frames",
     )
     _add_field_columns_arg(parser)
+    _add_mass_weight_args(parser)
     _add_projection_arg(parser)
     _add_components_arg(
         parser,

@@ -133,6 +133,17 @@ def main() -> None:
         progress=args.progress,
         progress_reports=args.progress_reports,
     )
+    if args.mass_weight:
+        if not args.masses:
+            raise ValueError("--mass-weight requires --masses (one atomic mass per atom type)")
+        calc.set_mass_weights(args.masses)
+        if is_root:
+            print(
+                "[INFO] Mass weighting enabled (phonon convention): field scaled by "
+                f"sqrt(mass) per atom; masses by type = {tuple(args.masses)}"
+            )
+    elif is_root and args.masses:
+        print("[INFO] --masses provided but --mass-weight not set; masses ignored (magnon convention).")
     if is_root:
         calc.print_lattice_info()
 

@@ -157,10 +157,17 @@ def _build_scalar_spin_autocorr(
     comp_idx: list[int],
     subtract_mean: bool,
     corr_norm: str,
+    atom_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     data = np.asarray(spins[:, :, comp_idx], dtype=np.float64)
     if subtract_mean:
         data = data - np.mean(data, axis=0, keepdims=True)
+    # Per-atom sqrt(mass) weighting (phonon convention): the autocorrelation is
+    # quadratic in the field, so scaling each atom's field by sqrt(m_i) here yields
+    # the standard mass-weighted m_i factor on its VACF contribution. None leaves
+    # the unweighted (magnon) DOS unchanged.
+    if atom_weights is not None:
+        data = data * np.asarray(atom_weights, dtype=np.float64)[None, :, None]
 
     nt, natoms, ncomp = data.shape
     nch = natoms * ncomp
@@ -191,6 +198,7 @@ def compute_dos_autocorr(
         comp_idx=comp_idx,
         subtract_mean=(not args.no_subtract_mean),
         corr_norm=args.corr_norm,
+        atom_weights=calc.atom_weights,
     )
 
     corr_full = np.concatenate([corr_plus[1:][::-1], corr_plus])
@@ -282,6 +290,18 @@ def main() -> None:
         progress=args.progress,
         progress_reports=args.progress_reports,
     )
+
+    if args.mass_weight:
+        if not args.masses:
+            raise ValueError("--mass-weight requires --masses (one atomic mass per atom type)")
+        calc.set_mass_weights(args.masses)
+        if is_root:
+            print(
+                "[INFO] Mass weighting enabled (phonon convention): field scaled by "
+                f"sqrt(mass) per atom; masses by type = {tuple(args.masses)}"
+            )
+    elif is_root and args.masses:
+        print("[INFO] --masses provided but --mass-weight not set; masses ignored (magnon convention).")
 
     if is_root:
         calc.print_lattice_info()

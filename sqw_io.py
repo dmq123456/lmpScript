@@ -99,7 +99,9 @@ def _report_dump_read_progress(
     )
 
 
-def load_binary_arrays(cache_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+def load_binary_arrays(
+    cache_path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None] | None:
     if not cache_path.exists():
         return None
     try:
@@ -111,7 +113,8 @@ def load_binary_arrays(cache_path: Path) -> tuple[np.ndarray, np.ndarray, np.nda
             positions_arr = np.asarray(data["positions"]).copy()
             spins_arr = np.asarray(data["spins"]).copy()
             lattice_arr = np.asarray(data["lattice"]).copy()
-            return timesteps_arr, positions_arr, spins_arr, lattice_arr
+            atom_types_arr = np.asarray(data["atom_types"]).copy() if "atom_types" in data else None
+            return timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types_arr
     except Exception:
         return None
 
@@ -126,7 +129,7 @@ def load_binary_cache_if_valid(
     frame_step: int,
     spin_threshold: float,
     field_columns: tuple[str, str, str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None] | None:
     if not cache_path.exists():
         return None
 
@@ -191,7 +194,8 @@ def load_binary_cache_if_valid(
             positions_arr = np.asarray(data["positions"]).copy()
             spins_arr = np.asarray(data["spins"]).copy()
             lattice_arr = np.asarray(data["lattice"]).copy()
-            return timesteps_arr, positions_arr, spins_arr, lattice_arr
+            atom_types_arr = np.asarray(data["atom_types"]).copy() if "atom_types" in data else None
+            return timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types_arr
     except Exception:
         return None
 
@@ -210,6 +214,7 @@ def write_binary_cache(
     frame_step: int,
     spin_threshold: float,
     field_columns: tuple[str, str, str],
+    atom_types: np.ndarray | None = None,
 ) -> None:
     source_stat = source_path.stat()
     source_resolved = str(source_path.resolve())
@@ -217,24 +222,26 @@ def write_binary_cache(
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.parent / f".{cache_path.name}.{os.getpid()}.tmp.npz"
+    save_kwargs = dict(
+        timesteps=np.asarray(timesteps),
+        positions=np.asarray(positions),
+        spins=np.asarray(spins),
+        lattice=np.asarray(lattice),
+        meta_source_path=np.asarray(source_resolved),
+        meta_source_size=np.asarray(int(source_stat.st_size), dtype=np.int64),
+        meta_source_mtime_ns=np.asarray(int(source_stat.st_mtime_ns), dtype=np.int64),
+        meta_dtype=np.asarray(np.dtype(dtype).name),
+        meta_frame_start=np.asarray(int(frame_start), dtype=np.int64),
+        meta_frame_stop=np.asarray(frame_stop_value, dtype=np.int64),
+        meta_frame_step=np.asarray(int(frame_step), dtype=np.int64),
+        meta_keep_all_positions=np.asarray(int(bool(keep_all_positions)), dtype=np.int64),
+        meta_spin_threshold=np.asarray(float(spin_threshold), dtype=np.float64),
+        meta_field_columns=np.asarray("\t".join(field_columns)),
+    )
+    if atom_types is not None:
+        save_kwargs["atom_types"] = np.asarray(atom_types, dtype=np.int64)
     try:
-        np.savez_compressed(
-            tmp_path,
-            timesteps=np.asarray(timesteps),
-            positions=np.asarray(positions),
-            spins=np.asarray(spins),
-            lattice=np.asarray(lattice),
-            meta_source_path=np.asarray(source_resolved),
-            meta_source_size=np.asarray(int(source_stat.st_size), dtype=np.int64),
-            meta_source_mtime_ns=np.asarray(int(source_stat.st_mtime_ns), dtype=np.int64),
-            meta_dtype=np.asarray(np.dtype(dtype).name),
-            meta_frame_start=np.asarray(int(frame_start), dtype=np.int64),
-            meta_frame_stop=np.asarray(frame_stop_value, dtype=np.int64),
-            meta_frame_step=np.asarray(int(frame_step), dtype=np.int64),
-            meta_keep_all_positions=np.asarray(int(bool(keep_all_positions)), dtype=np.int64),
-            meta_spin_threshold=np.asarray(float(spin_threshold), dtype=np.float64),
-            meta_field_columns=np.asarray("\t".join(field_columns)),
-        )
+        np.savez_compressed(tmp_path, **save_kwargs)
         os.replace(tmp_path, cache_path)
     finally:
         if tmp_path.exists():
@@ -276,12 +283,19 @@ def finalize_loaded_arrays(
     keep_all_positions: bool,
     dtype: np.dtype,
     spin_threshold: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    atom_types: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     dtype = np.dtype(dtype)
     timesteps_arr = np.asarray(timesteps_arr, dtype=int)
     positions_arr = np.asarray(positions_arr, dtype=dtype)
     spins_arr = np.asarray(spins_arr, dtype=dtype)
     lattice_arr = np.asarray(lattice_arr, dtype=float)
+    if atom_types is not None:
+        atom_types = np.asarray(atom_types, dtype=np.int64)
+        if atom_types.ndim != 1 or atom_types.shape[0] != spins_arr.shape[1]:
+            raise ValueError(
+                "atom_types length does not match the number of atoms in the field array."
+            )
 
     if timesteps_arr.size < 2:
         raise ValueError("Need at least 2 frames to compute a frequency spectrum.")
@@ -311,8 +325,10 @@ def finalize_loaded_arrays(
             )
         spins_arr = spins_arr[:, keep_atoms, :]
         positions_arr = positions_arr[:, keep_atoms, :]
+        if atom_types is not None:
+            atom_types = atom_types[keep_atoms]
 
-    return timesteps_arr, positions_arr, spins_arr, lattice_arr
+    return timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types
 
 
 def parse_text_dump(
@@ -330,6 +346,7 @@ def parse_text_dump(
     positions: List[np.ndarray] = []
     spins: List[np.ndarray] = []
     lattice: np.ndarray | None = None
+    atom_types: np.ndarray | None = None
 
     line_num = 0
     frame_count_total = 0
@@ -433,6 +450,7 @@ def parse_text_dump(
             missing = [c for c in required if c not in col_map]
             if missing:
                 raise ValueError(f"Missing required columns in ATOMS header: {missing}")
+            has_type = "type" in col_map
 
             keep_frame = frame_count_total >= frame_start
             if frame_stop is not None and frame_count_total >= frame_stop:
@@ -440,9 +458,12 @@ def parse_text_dump(
             elif keep_frame:
                 keep_frame = ((frame_count_total - frame_start) % frame_step) == 0
 
+            capture_types = keep_frame and has_type and atom_types is None
             if keep_frame:
                 pos_frame = np.empty((natoms, 3), dtype=dtype)
                 field_frame = np.empty((natoms, 3), dtype=dtype)
+            if capture_types:
+                type_frame = np.empty(natoms, dtype=np.int32)
 
             for ia in range(natoms):
                 line = f.readline()
@@ -458,6 +479,8 @@ def parse_text_dump(
                 field_frame[ia, 0] = float(vals[col_map[field_columns[0]]])
                 field_frame[ia, 1] = float(vals[col_map[field_columns[1]]])
                 field_frame[ia, 2] = float(vals[col_map[field_columns[2]]])
+                if capture_types:
+                    type_frame[ia] = int(vals[col_map["type"]])
 
             if keep_frame:
                 timesteps.append(timestep)
@@ -466,6 +489,8 @@ def parse_text_dump(
                     positions.append(pos_frame)
                 elif not positions:
                     positions.append(pos_frame)
+            if capture_types:
+                atom_types = type_frame
 
             frame_count_total += 1
             if show_progress:
@@ -533,7 +558,7 @@ def parse_text_dump(
     positions_arr = np.asarray(positions, dtype=dtype)
     spins_arr = np.asarray(spins, dtype=dtype)
     lattice_arr = np.asarray(lattice, dtype=float)
-    return timesteps_arr, positions_arr, spins_arr, lattice_arr
+    return timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types
 
 
 def load_spin_dump(
@@ -569,7 +594,7 @@ def load_spin_dump(
                 "Binary input does not contain required arrays: "
                 "'timesteps', 'positions', 'spins', 'lattice'."
             )
-        timesteps_arr, positions_arr, spins_arr, lattice_arr = binary_loaded
+        timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types_arr = binary_loaded
         timesteps_arr, positions_arr, spins_arr = apply_frame_selection_to_loaded_arrays(
             timesteps_arr=timesteps_arr,
             positions_arr=positions_arr,
@@ -586,6 +611,7 @@ def load_spin_dump(
             keep_all_positions=keep_all_positions,
             dtype=dtype,
             spin_threshold=spin_threshold,
+            atom_types=atom_types_arr,
         )
 
     cache_path = Path(cache_file) if cache_file is not None else binary_cache_path(source_path)
@@ -610,9 +636,10 @@ def load_spin_dump(
                 keep_all_positions=keep_all_positions,
                 dtype=dtype,
                 spin_threshold=spin_threshold,
+                atom_types=cached_loaded[4],
             )
 
-    timesteps_arr, positions_arr, spins_arr, lattice_arr = parse_text_dump(
+    timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types_arr = parse_text_dump(
         filename=source_path,
         keep_all_positions=keep_all_positions,
         dtype=dtype,
@@ -640,6 +667,7 @@ def load_spin_dump(
                 frame_step=frame_step,
                 spin_threshold=spin_threshold,
                 field_columns=field_columns,
+                atom_types=atom_types_arr,
             )
         except Exception:
             pass
@@ -652,6 +680,7 @@ def load_spin_dump(
         keep_all_positions=keep_all_positions,
         dtype=dtype,
         spin_threshold=spin_threshold,
+        atom_types=atom_types_arr,
     )
 
 

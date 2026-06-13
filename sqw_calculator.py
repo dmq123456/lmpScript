@@ -44,6 +44,7 @@ class SpinStructureFactorCalculator:
         spins: np.ndarray,
         lattice: np.ndarray,
         field_columns: tuple[str, str, str] | None = None,
+        atom_types: np.ndarray | None = None,
     ) -> None:
         self.timesteps = timesteps
         self.positions = positions
@@ -53,6 +54,11 @@ class SpinStructureFactorCalculator:
         self.reciprocal_lattice = reciprocal_lattice_from_real(lattice)
         self.real_dtype = np.float32 if self.spins.dtype == np.float32 else np.float64
         self.complex_dtype = np.complex64 if self.real_dtype == np.float32 else np.complex128
+        # Per-atom integer species/type ids (or None if the dump had no 'type' column).
+        self.atom_types = None if atom_types is None else np.asarray(atom_types, dtype=np.int64)
+        # Per-atom field weight applied before the spatial Fourier sum. None means
+        # unweighted (magnon convention); set_mass_weights() fills it with sqrt(mass).
+        self.atom_weights: np.ndarray | None = None
 
     @staticmethod
     def _binary_cache_path(source_path: Path) -> Path:
@@ -99,6 +105,7 @@ class SpinStructureFactorCalculator:
         frame_stop: int | None,
         frame_step: int,
         spin_threshold: float,
+        atom_types: np.ndarray | None = None,
     ) -> None:
         write_binary_cache(
             cache_path=cache_path,
@@ -113,6 +120,7 @@ class SpinStructureFactorCalculator:
             frame_stop=frame_stop,
             frame_step=frame_step,
             spin_threshold=spin_threshold,
+            atom_types=atom_types,
         )
 
     @staticmethod
@@ -142,7 +150,8 @@ class SpinStructureFactorCalculator:
         keep_all_positions: bool,
         dtype: np.dtype,
         spin_threshold: float,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        atom_types: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         return finalize_loaded_arrays(
             timesteps_arr=timesteps_arr,
             positions_arr=positions_arr,
@@ -151,6 +160,7 @@ class SpinStructureFactorCalculator:
             keep_all_positions=keep_all_positions,
             dtype=dtype,
             spin_threshold=spin_threshold,
+            atom_types=atom_types,
         )
 
     @staticmethod
@@ -197,7 +207,7 @@ class SpinStructureFactorCalculator:
             frame_stop=frame_stop,
             frame_step=frame_step,
         )
-        timesteps_arr, positions_arr, spins_arr, lattice_arr = load_spin_dump(
+        timesteps_arr, positions_arr, spins_arr, lattice_arr, atom_types_arr = load_spin_dump(
             filename=filename,
             keep_all_positions=keep_all_positions,
             dtype=dtype,
@@ -217,6 +227,7 @@ class SpinStructureFactorCalculator:
             spins=spins_arr,
             lattice=lattice_arr,
             field_columns=normalized_field_columns,
+            atom_types=atom_types_arr,
         )
 
     def q_frac_to_cart(self, q_frac: np.ndarray) -> np.ndarray:
@@ -232,6 +243,39 @@ class SpinStructureFactorCalculator:
         print(f"{prefix} First-frame reciprocal lattice vectors (rows):")
         for idx, vec in enumerate(self.reciprocal_lattice, start=1):
             print(f"{prefix}   b{idx} = ({vec[0]: .10f}, {vec[1]: .10f}, {vec[2]: .10f})")
+
+    def set_mass_weights(self, masses_per_type) -> None:
+        """Weight each atom's field by sqrt(mass) before the spatial Fourier sum.
+
+        masses_per_type is a 1-based list of atomic masses indexed by LAMMPS atom
+        type (type 1 -> masses_per_type[0]). This produces the phonon
+        spectral-energy-density weighting. Leaving atom_weights as None (the
+        default) reproduces the unweighted spectrum used for magnons.
+        """
+        if self.atom_types is None:
+            raise ValueError(
+                "Mass weighting requested but no per-atom 'type' information is "
+                "available. Ensure the dump has a 'type' column and re-read it. If a "
+                "binary cache predates type capture, delete the <dumpfile>.sqwcache.npz "
+                "file or pass --no-cache-binary so the dump is parsed again."
+            )
+        masses = np.asarray(masses_per_type, dtype=np.float64)
+        if masses.ndim != 1 or masses.size < 1:
+            raise ValueError("masses_per_type must be a 1D sequence with at least one entry")
+        if np.any(masses <= 0.0):
+            raise ValueError("All per-type masses must be positive")
+        types = self.atom_types
+        tmin, tmax = int(types.min()), int(types.max())
+        if tmin < 1:
+            raise ValueError(
+                f"Atom types must be 1-based positive integers; found minimum type {tmin}"
+            )
+        if tmax > masses.size:
+            raise ValueError(
+                f"Dump contains atom type {tmax} but only {masses.size} mass value(s) were "
+                f"provided; supply one mass per type for types 1..{tmax}."
+            )
+        self.atom_weights = np.sqrt(masses[types - 1]).astype(self.real_dtype, copy=False)
 
     def _build_sqt_single_q(
         self,
@@ -273,12 +317,16 @@ class SpinStructureFactorCalculator:
                 # Use the exp(+i q·r) Fourier convention so a mode exp(i(q·r-wt))
                 # appears at the same signed q in S(q,w).
                 phase = np.exp(1j * (self.positions[it] @ q)).astype(self.complex_dtype, copy=False)
+                if self.atom_weights is not None:
+                    phase = phase * self.atom_weights
                 field_frame = project_frame(self.spins[it])
                 for alpha in range(3):
                     out[it, alpha] = norm * np.dot(field_frame[:, alpha], phase)
         else:
             r0 = self.positions[0]
             phase = np.exp(1j * (r0 @ q)).astype(self.complex_dtype, copy=False)
+            if self.atom_weights is not None:
+                phase = phase * self.atom_weights
             projected = project_frame(self.spins)
             for alpha in range(3):
                 out[:, alpha] = norm * (projected[:, :, alpha] @ phase)
