@@ -490,10 +490,5 @@ def main() -> None:
     save_gif(images, args.output_gif, args.fps)
     print(f"[INFO] Output GIF      : {args.output_gif}")
 
-
-# python3 extract_spin_animation.py dump.lammpstrj spin_texture.gif
-# python3 extract_spin_animation.py dump.lammpstrj spin_texture.gif --frame-start 0 --frame-stop 20 --frame-step 2
-# python3 extract_spin_animation.py dump.lammpstrj spin_texture.gif --color-component z --fps 6
-# mpirun -np 4 python3 extract_spin_animation.py dump.lammpstrj spin_texture.gif --frame-start 0 --frame-stop 20
 if __name__ == "__main__":
     main()

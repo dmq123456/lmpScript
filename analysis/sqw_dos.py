@@ -122,6 +122,8 @@ def compute_dos_qavg(
             translation_repeats=tuple(args.translation_repeats),
             subtract_mean=(not args.no_subtract_mean),
             window=args.window,
+            progress=args.progress,
+            progress_reports=args.progress_reports,
             mpi_comm=mpi_comm,
         )
     else:
@@ -136,6 +138,8 @@ def compute_dos_qavg(
             window=args.window,
             corr_norm=args.corr_norm,
             return_corr_plus=False,
+            progress=args.progress,
+            progress_reports=args.progress_reports,
             mpi_comm=mpi_comm,
         )
 
@@ -233,12 +237,9 @@ def plot_dos_curves(
 
     if mirror:
         ax.axhline(y=0, color="k", linewidth=0.6)
-        ymax = max(abs(v) for _, _, _, final in curves for v in (final.max(),))
-        for sign in (-1.0, 1.0):
-            ax.fill_between(
-                curves[0][1], 0, sign * ymax,
-                alpha=0.04, color="gray",
-            )
+        y_pos = curves[0][3].max()
+        y_neg = curves[1][3].max()
+        ax.set_ylim(-1.05 * y_neg, 1.05 * y_pos)
 
     ax.set_xlabel("Energy (meV)" if use_mev else "Frequency (THz)")
     ax.set_ylabel("DOS (arb. units)")

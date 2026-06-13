@@ -642,6 +642,7 @@ def build_dos_arg_parser() -> argparse.ArgumentParser:
         cache_help="Auto-read/write binary cache for dump parsing (default: enabled)",
         cache_file_help="Custom cache path",
     )
+    _add_progress_args(parser)
     _add_spin_threshold_arg(parser)
     _add_bz_grid_args(
         parser,

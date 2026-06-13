@@ -114,7 +114,7 @@ for strj in s4;do
                   --field-columns c_outsp[1] c_outsp[2] c_outsp[3] \
                   --supercell 20 20 1 \
                   --dt-fs "$dt" \
-                  --translation-repeats 10 10 1 \
+                  --translation-repeats 1 1 1 \
                   --dtype float32 \
                   --frame-start "$start" \
                   --frame-stop "$stop" \
