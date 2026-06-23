@@ -616,23 +616,16 @@ def build_integrated_arg_parser() -> argparse.ArgumentParser:
 def build_dos_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute DOS using two routes: "
-            "(1) q-averaged S(q,w) on 2D first BZ, "
-            "(2) Fourier transform of velocity/spin autocorrelation."
+            "Compute the vibrational/spin DOS from the Fourier transform of the "
+            "velocity/spin autocorrelation function."
         )
     )
     _add_dumpfile_arg(parser)
     parser.add_argument(
         "--dos-method",
-        choices=["qavg", "autocorr", "both"],
-        default="both",
-        help="Which DOS definition to run (default: both)",
-    )
-    parser.add_argument(
-        "--sqw-method",
-        choices=["periodogram", "corr"],
-        default="periodogram",
-        help="S(q,w) estimator used by qavg route (default: periodogram)",
+        choices=["autocorr"],
+        default="autocorr",
+        help="DOS definition; only 'autocorr' (velocity/spin autocorrelation) is supported",
     )
     _add_supercell_arg(
         parser,
@@ -672,12 +665,6 @@ def build_dos_arg_parser() -> argparse.ArgumentParser:
     )
     _add_progress_args(parser)
     _add_spin_threshold_arg(parser)
-    _add_bz_grid_args(
-        parser,
-        nh_help="q grid size along primitive b1 (default: 121)",
-        nk_help="q grid size along primitive b2 (default: 121)",
-        frac_limit_help="Half-width of sampled rectangle in primitive reciprocal fractional units",
-    )
     _add_freq_range_args(
         parser,
         min_help="Minimum frequency to keep",
