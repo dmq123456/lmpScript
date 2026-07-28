@@ -173,6 +173,76 @@ def _resolve_method(args: argparse.Namespace, default_method: str | None) -> str
     return default_method if default_method is not None else args.method
 
 
+def _run_tensor_channels(
+    calc, args, channels, q_frac_engine_eval, q_frac_input, q_cart_input,
+    q_input_reciprocal, q_node_indices, q_node_labels, mpi_comm, is_root, method,
+) -> None:
+    """Compute the full S^{ab}(q,w) tensor once and write one npz + plot per
+    requested channel (T/L/1..9). Output files get a _<channel> suffix."""
+    q_vectors_ch, freq_thz_ch, ch_arr = calc.compute_correlation_tensor_channels(
+        q_frac=q_frac_engine_eval,
+        dt_fs=args.dt_fs,
+        channels=channels,
+        use_instantaneous_pos=args.use_instantaneous_pos,
+        translation_repeats=tuple(args.translation_repeats),
+        subtract_mean=(not args.no_subtract_mean),
+        window=args.window,
+        corr_norm=args.corr_norm,
+        progress=args.progress,
+        progress_reports=args.progress_reports,
+        mpi_comm=mpi_comm,
+    )
+    if not is_root:
+        return
+
+    base_out = Path(args.output) if args.output is not None else Path(default_path_output_for_method(method))
+    plot_prefix = args.plot_file if args.plot_file is not None else "sqw_results"
+
+    for ic, label in enumerate(channels):
+        res_c = SQWResult(
+            timesteps=calc.timesteps,
+            q_frac=q_frac_engine_eval,
+            q_vectors=q_vectors_ch,
+            freq_thz=freq_thz_ch,
+            sqw=ch_arr[ic],
+            lattice=calc.lattice,
+            reciprocal_lattice=calc.reciprocal_lattice,
+            dt_fs=args.dt_fs,
+            components=label,
+            field_columns=np.asarray(calc.field_columns) if calc.field_columns is not None else None,
+            projection="tensor",
+            freq_mode="fft",
+            translation_repeats=tuple(args.translation_repeats),
+            q_node_indices=q_node_indices,
+            q_node_labels=q_node_labels,
+            corr_plus=None,
+            corr_norm=args.corr_norm,
+            q_frac_input=q_frac_input,
+            q_input_reciprocal_lattice=q_input_reciprocal,
+        )
+        if args.save_npz:
+            out_c = base_out.with_name(f"{base_out.stem}_{label}{base_out.suffix}")
+            np.savez(out_c, **res_c.to_npz_dict())
+            print(f"[INFO] [{label}] saved: {out_c}")
+        if args.plot:
+            plot_sqw(
+                q_vectors=q_vectors_ch,
+                freq_thz=freq_thz_ch,
+                sqw=ch_arr[ic],
+                outfile=f"{plot_prefix}_{label}",
+                max_freq_thz=args.max_freq_thz,
+                cbar_min=args.cbar_min,
+                cbar_max=args.cbar_max,
+                use_meV=args.mev,
+                title=f"S(q,w) component={label}",
+                q_node_indices=q_node_indices,
+                q_node_labels=q_node_labels,
+                cmap=_plot_cmap("corr"),
+            )
+    if not args.save_npz:
+        print("[INFO] --save-npz is not set; skipping .npz output.")
+
+
 def _result_title(method: str, components: str, projection: str) -> str:
     if projection == "cartesian":
         detail = f"components={components}"
@@ -185,7 +255,7 @@ def _result_title(method: str, components: str, projection: str) -> str:
 
 def _plot_cmap(method: str) -> str | None:
     if method == "corr":
-        return "YlOrRd"
+        return "viridis"  #"YlOrRd"
     return None
 
 
@@ -213,6 +283,17 @@ def main(
         raise ValueError("--save-corr-plus cannot be combined with --bz-folded because folding is applied to S(q,w)")
     if method == "corr" and freq_mode != "fft":
         raise ValueError("--freq-mode direct is only available when method='periodogram'")
+
+    channels = None
+    if getattr(args, "component", None):
+        if method != "corr":
+            raise ValueError("--component is only available with the correlation method (sqw_spin_corr.py)")
+        if bz_fold_active:
+            raise ValueError("--component cannot be combined with --bz-folded")
+        if getattr(args, "save_corr_plus", False):
+            raise ValueError("--component does not support --save-corr-plus")
+        from sqw_calculator import normalize_channel_label
+        channels = [normalize_channel_label(t) for t in args.component]
     if freq_mode == "direct":
         if freq_max_thz is None:
             raise ValueError("--freq-max-thz is required when --freq-mode direct")
@@ -338,6 +419,16 @@ def main(
                 )
         if args.progress:
             print(f"[INFO] Progress reporting enabled: target ~{args.progress_reports} updates")
+
+    if channels is not None:
+        _run_tensor_channels(
+            calc=calc, args=args, channels=channels,
+            q_frac_engine_eval=q_frac_engine_eval, q_frac_input=q_frac_input,
+            q_cart_input=q_cart_input, q_input_reciprocal=q_input_reciprocal,
+            q_node_indices=q_node_indices, q_node_labels=q_node_labels,
+            mpi_comm=mpi_comm, is_root=is_root, method=method,
+        )
+        return
 
     if method == "corr":
         result = calc.compute_correlation_spectrum(

@@ -474,6 +474,19 @@ def build_path_arg_parser(
             ),
             include_save_corr_plus=True,
         )
+        parser.add_argument(
+            "--component",
+            type=str,
+            nargs="+",
+            default=None,
+            metavar="C",
+            help=(
+                "(corr only) Compute the full S^{ab}(q,w) tensor and output these channels in one run: "
+                "T (transverse to q), L (longitudinal to q), or tensor components 1..9 / xx..zz "
+                "(x/y/z = xx/yy/zz). Multiple allowed, e.g. --component T 1 5. When set it replaces "
+                "--projection/--components; each channel writes its own npz and plot with a _<C> suffix."
+            ),
+        )
 
     if default_method is None:
         output_help = (

@@ -35,6 +35,34 @@ from sqw_mpi import (
 )
 from sqw_result import SQWResult
 
+# Tensor-component labels -> (alpha, beta) indices into S^{ab}(q,w).
+# Row-major: 1=xx 2=xy 3=xz 4=yx 5=yy 6=yz 7=zx 8=zy 9=zz.
+_AXIS = {"x": 0, "y": 1, "z": 2}
+TENSOR_AB: dict[str, tuple[int, int]] = {}
+for _i, _ab in enumerate(
+    [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)], start=1
+):
+    TENSOR_AB[str(_i)] = _ab
+for _la, _a in _AXIS.items():
+    for _lb, _b in _AXIS.items():
+        TENSOR_AB[_la + _lb] = (_a, _b)
+
+
+def normalize_channel_label(token: str) -> str:
+    """Canonicalize a --component token: T/L, 1..9, or xx..zz (x/y/z -> xx/yy/zz)."""
+    t = token.strip()
+    up = t.upper()
+    if up in ("T", "L"):
+        return up
+    low = t.lower()
+    if low in ("x", "y", "z"):
+        low = low + low
+    if low in TENSOR_AB or t in TENSOR_AB:
+        return low if low in TENSOR_AB else t
+    raise ValueError(
+        f"Invalid component token {token!r}; use T, L, 1..9, or xx..zz (x/y/z = xx/yy/zz)."
+    )
+
 
 class SpinStructureFactorCalculator:
     def __init__(
@@ -512,6 +540,188 @@ class SpinStructureFactorCalculator:
         fft_all = np.fft.fft(corr_for_fft, axis=0)
         sqw = np.real(fft_all[pos_mask, :][:, comp_idx].sum(axis=1))
         return np.maximum(sqw, 0.0)
+
+    # ------------------------------------------------------------------
+    # Full 3x3 structure-factor tensor S^{ab}(q,w) and derived channels
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_tensor_corr_single_q(
+        sqt_q: np.ndarray,
+        subtract_mean: bool,
+        corr_norm: str,
+    ) -> np.ndarray:
+        """One-sided (tau>=0) tensor correlation C^{ab}(q,tau), shape (nt, 3, 3).
+
+        C^{ab}(tau) = (1/M) sum_t s^a(t+tau) s^b*(t). The diagonal a=b reproduces
+        _compute_time_correlation_single_q.
+        """
+        data = sqt_q.copy()
+        if subtract_mean:
+            data -= data.mean(axis=0, keepdims=True)
+        nt = data.shape[0]
+        corr = np.zeros((nt, 3, 3), dtype=data.dtype)
+        for tau in range(nt):
+            left = data[tau:, :]
+            right = np.conjugate(data[: nt - tau, :])
+            m = np.einsum("ta,tb->ab", left, right)
+            if corr_norm == "biased":
+                corr[tau] = m / nt
+            elif corr_norm == "unbiased":
+                corr[tau] = m / (nt - tau)
+            else:
+                raise ValueError("corr_norm must be 'biased' or 'unbiased'")
+        return corr
+
+    @staticmethod
+    def _build_full_tensor_correlation(corr_tensor: np.ndarray) -> np.ndarray:
+        """Extend to two-sided tau using C^{ab}(-tau) = conj(C^{ba}(tau))."""
+        neg = np.conjugate(np.transpose(corr_tensor[1:][::-1], (0, 2, 1)))
+        return np.concatenate([neg, corr_tensor], axis=0)
+
+    @staticmethod
+    def _tensor_sqw(
+        corr_tensor_q: np.ndarray,
+        pos_mask: np.ndarray,
+        window_vec: np.ndarray,
+    ) -> np.ndarray:
+        """FFT the windowed tensor correlation -> S^{ab}(q,w), shape (nfreq, 3, 3) complex."""
+        full = SpinStructureFactorCalculator._build_full_tensor_correlation(corr_tensor_q)
+        full = full * window_vec[:, None, None]
+        for_fft = np.fft.ifftshift(full, axes=0)
+        fft_all = np.fft.fft(for_fft, axis=0)
+        return fft_all[pos_mask, :, :]
+
+    @staticmethod
+    def _channel_value(swab: np.ndarray, qhat: np.ndarray | None, label: str) -> np.ndarray:
+        """Extract one output channel from S^{ab}(q,w), shape (nfreq,3,3) complex.
+
+        T = sum_ab (delta_ab - qh_a qh_b) S^{ab}  (transverse to q, neutron);
+        L = sum_ab qh_a qh_b S^{ab}               (longitudinal to q);
+        1..9 / xx..zz = the raw tensor component S^{ab}. Diagonal and T/L are
+        clipped to >=0 (physical intensities); off-diagonal keeps its sign.
+        """
+        if label in ("T", "L"):
+            if qhat is None:  # q -> 0: L undefined -> 0; T -> trace
+                if label == "L":
+                    return np.zeros(swab.shape[0], dtype=np.float64)
+                val = swab[:, 0, 0] + swab[:, 1, 1] + swab[:, 2, 2]
+                return np.maximum(np.real(val), 0.0)
+            proj_l = np.outer(qhat, qhat)
+            weight = proj_l if label == "L" else (np.eye(3) - proj_l)
+            val = np.einsum("wab,ab->w", swab, weight)
+            return np.maximum(np.real(val), 0.0)
+        a, b = TENSOR_AB[label]
+        val = np.real(swab[:, a, b])
+        return np.maximum(val, 0.0) if a == b else val
+
+    def _compute_channels_from_corr(
+        self,
+        q_vectors: np.ndarray,
+        dt_fs: float,
+        channels: List[str],
+        use_instantaneous_pos: bool,
+        translation_repeats: np.ndarray,
+        subtract_mean: bool,
+        window: str,
+        corr_norm: str,
+        progress: bool,
+        progress_reports: int,
+        mpi_comm: object | None = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Per-q tensor correlation -> requested channels. Returns freq_thz and
+        an array of shape (n_channels, nq, nfreq)."""
+        nq = q_vectors.shape[0]
+        nt = self.spins.shape[0]
+        nch = len(channels)
+        n_corr = 2 * nt - 1
+        window_vec = self._window_array(n_corr, window).astype(self.real_dtype, copy=False)
+        dt_s = dt_fs * 1.0e-15
+        freq_hz_all = np.fft.fftfreq(n_corr, d=dt_s)
+        pos_mask = freq_hz_all >= 0.0
+        freq_thz = freq_hz_all[pos_mask] / 1.0e12
+
+        mpi_rank, mpi_size = _mpi_rank_size(mpi_comm)
+        if mpi_size == 1 or mpi_rank == 0:
+            out = np.zeros((nch, nq, freq_thz.size), dtype=np.float64)
+        else:
+            out = np.empty((nch, 0, freq_thz.size), dtype=np.float64)
+
+        local_indices = _q_indices_for_rank(nq, mpi_rank, mpi_size)
+        local_out = np.zeros((nch, local_indices.size, freq_thz.size), dtype=np.float64)
+        max_local_steps = (nq + mpi_size - 1) // mpi_size if nq > 0 else 0
+        report_interval = _progress_report_interval(max_local_steps, progress_reports)
+        progress_start = time.perf_counter()
+
+        for iloc in range(max_local_steps):
+            if iloc < local_indices.size:
+                iq = int(local_indices[iloc])
+                qv = q_vectors[iq]
+                sqt_q = self._build_sqt_single_q(
+                    qv,
+                    use_instantaneous_pos=use_instantaneous_pos,
+                    translation_repeats=translation_repeats,
+                    projection="cartesian",
+                )
+                corr_tensor = self._compute_tensor_corr_single_q(sqt_q, subtract_mean, corr_norm)
+                swab = self._tensor_sqw(corr_tensor, pos_mask, window_vec)
+                qn = float(np.linalg.norm(qv))
+                qhat = None if qn <= 1.0e-15 else (qv / qn)
+                for ic, label in enumerate(channels):
+                    local_out[ic, iloc] = self._channel_value(swab, qhat, label)
+
+            step = iloc + 1
+            if progress and (step == max_local_steps or step % report_interval == 0):
+                _report_q_progress(
+                    label="S(q,w) tensor",
+                    step=step,
+                    local_total=int(local_indices.size),
+                    global_total=int(nq),
+                    start_time=progress_start,
+                    mpi_comm=mpi_comm,
+                    mpi_rank=mpi_rank,
+                )
+
+        if mpi_size == 1:
+            out[:, local_indices, :] = local_out
+        else:
+            gathered = mpi_comm.gather((local_indices, local_out), root=0)
+            if mpi_rank == 0:
+                for gathered_indices, gathered_out in gathered:
+                    out[:, gathered_indices, :] = gathered_out
+        return freq_thz, out
+
+    def compute_correlation_tensor_channels(
+        self,
+        q_frac: np.ndarray,
+        dt_fs: float,
+        channels: List[str],
+        use_instantaneous_pos: bool = False,
+        translation_repeats: Tuple[int, int, int] = (1, 1, 1),
+        subtract_mean: bool = True,
+        window: str = "hann",
+        corr_norm: str = "biased",
+        progress: bool = True,
+        progress_reports: int = 20,
+        mpi_comm: object | None = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Public entry: returns (q_vectors, freq_thz, channels_array) where
+        channels_array has shape (n_channels, nq, nfreq)."""
+        q_vectors = self.q_frac_to_cart(q_frac)
+        repeats = self._validate_translation_repeats(translation_repeats)
+        freq_thz, out = self._compute_channels_from_corr(
+            q_vectors=q_vectors,
+            dt_fs=dt_fs,
+            channels=channels,
+            use_instantaneous_pos=use_instantaneous_pos,
+            translation_repeats=repeats,
+            subtract_mean=subtract_mean,
+            window=window,
+            corr_norm=corr_norm,
+            progress=progress,
+            progress_reports=progress_reports,
+            mpi_comm=mpi_comm,
+        )
+        return q_vectors, freq_thz, out
 
     def _compute_sqw_from_sqt(
         self,
