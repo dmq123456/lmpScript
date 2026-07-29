@@ -1,0 +1,542 @@
+\documentclass[12pt, a4paper, oneside]{article}
+\usepackage{amsmath, amsthm, amssymb, bm, graphicx, hyperref, mathrsfs, booktabs}
+\usepackage[margin=2.5cm]{geometry}
+
+\linespread{1.3}
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\qvec}{\mathbf{q}}
+\newcommand{\rvec}{\mathbf{r}}
+\newcommand{\avec}{\mathbf{a}}
+\newcommand{\bvec}{\mathbf{b}}
+\newcommand{\qhat}{\hat{\mathbf{q}}}
+\newcommand{\Nt}{N_t}
+\newcommand{\Na}{N}
+\newcommand{\Nq}{N_q}
+\newcommand{\Nw}{N_\omega}
+\newcommand{\field}{S}
+\newcommand{\Wmat}{\mathbf{W}}
+
+\begin{document}
+
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+    \Huge\textbf{Dynamic Structure Factor from Time-Correlation Functions}
+
+    \vspace{1cm}
+    \Large\textbf{Algorithm and Formulas}
+
+    \vspace{0.8cm}
+    \large \texttt{corr/sqw\_spin\_corr.py}
+\end{center}
+\vspace*{\fill}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ======================================================================
+\section{Overview}
+% ======================================================================
+
+Given a LAMMPS-like dump containing a three-component field $\field_j^\alpha(t)$
+($\alpha = x,y,z$) on each atom $j = 1,\dots,\Na$ over $\Nt$ time frames, this
+program computes the dynamic structure factor along a user-specified
+$\qvec$-path through the time-correlation route:
+
+\begin{equation}
+    \field_j^\alpha(t) \;\longrightarrow\; s^\alpha(\qvec,t)
+    \;\longrightarrow\; C^{ab}(\qvec,\tau)
+    \;\longrightarrow\; S^{ab}(\qvec,\omega)
+    \;\longrightarrow\; \text{channels}.
+\end{equation}
+
+The full $3\times3$ tensor is carried through every stage. This is what allows
+a single run to emit several output channels at once, and --- with the FFT
+evaluation of Sec.~\ref{sec:wk} --- it costs only a small multiple of a single
+component rather than nine times as much.
+
+\begin{remark}[Code layout]
+The seven lines of \texttt{sqw\_at\_one\_q} in \texttt{sqw\_spin\_corr.py} are
+the whole calculation, one per stage below. Parallelism appears nowhere in that
+chain: the kernel is serial and handles one $\qvec$-point, and
+\texttt{driver.py:map\_over\_q} is the only place that knows about MPI.
+Supporting modules: \texttt{fields.py} (Sec.~\ref{sec:spatial}),
+\texttt{correlate.py} (Sec.~\ref{sec:corr}), \texttt{spectrum.py}
+(Sec.~\ref{sec:freq}), \texttt{channels.py} (Sec.~\ref{sec:channels}).
+\end{remark}
+
+% ======================================================================
+\section{Input Data}
+% ======================================================================
+
+\subsection{Field Configuration}
+
+The supercell contains $\Na$ atoms. The lattice is the $3\times3$ matrix of
+row-vectors
+
+\begin{equation}
+    \mathbf{L} = \begin{pmatrix} \avec_1 \\ \avec_2 \\ \avec_3 \end{pmatrix},
+\end{equation}
+
+and at $t_n = n\Delta t$ we have the positions $\rvec_j(t_n)$ and the field
+$\field_j^\alpha(t_n)$. The primitive cell is obtained by dividing $\mathbf{L}$
+by the \texttt{-\/-supercell} repeats, and its reciprocal lattice, whose rows
+satisfy $\bvec_i\cdot\avec_j^{\text{prim}} = 2\pi\delta_{ij}$, is
+
+\begin{equation}
+    \mathbf{B} = 2\pi\bigl(\mathbf{L}_{\text{prim}}^{-1}\bigr)^{\mathsf T}.
+\end{equation}
+
+All fractional $\qvec$ coordinates refer to this primitive reciprocal cell.
+
+\subsection{Per-Atom Weights}
+
+With \texttt{-\/-mass-weight}, each atom's field is scaled by $w_j =
+\sqrt{m_{\text{type}(j)}}$ before the spatial sum (the phonon
+spectral-energy-density convention). Without it $w_j = 1$, the magnon
+convention.
+
+\subsection{Field Threshold}
+
+Atoms with $\max_t \lVert\field_j(t)\rVert \le \tau_{\text{spin}}$ are dropped
+at load time to suppress noise from non-magnetic sites. Consequently $\Na$
+denotes throughout this document the number of \emph{retained} atoms, and it is
+that count which sets the $1/\sqrt{\Na}$ normalization below. The default
+$\tau_{\text{spin}} = 0$ removes nothing.
+
+% ======================================================================
+\section{Spatial Fourier Transform}
+\label{sec:spatial}
+% ======================================================================
+
+For each $\qvec$ (Cartesian, \AA$^{-1}$) and each frame,
+
+\begin{equation}
+\boxed{
+    s^\alpha(\qvec,t) = \frac{\Lambda(\qvec)}{\sqrt{\Na}}
+    \sum_{j=1}^{\Na} w_j\,\field_j^\alpha(t)\,e^{+i\qvec\cdot\rvec_j},
+    \qquad \alpha = x,y,z.
+}
+\label{eq:spatial_ft}
+\end{equation}
+
+The $e^{+i\qvec\cdot\rvec}$ convention places a plane wave
+$e^{i(\qvec\cdot\rvec-\omega t)}$ at the same signed $\qvec$ in the result, and
+$1/\sqrt{\Na}$ makes $\lvert s\rvert^2$ intensive. Positions are frozen at the
+first frame unless \texttt{-\/-use-instantaneous-pos} is given, in which case
+$\rvec_j = \rvec_j(t)$.
+
+Note that \emph{no projection is applied here}. The full Cartesian triple always
+goes forward; which combination is reported is decided later by a weight matrix
+(Sec.~\ref{sec:channels}).
+
+\subsection{Finite-Size Lattice Sum}
+
+\texttt{-\/-translation-repeats} $(N_1,N_2,N_3)$ repeats the loaded cell
+explicitly, multiplying Eq.~\eqref{eq:spatial_ft} by
+
+\begin{equation}
+\boxed{
+    \Lambda(\qvec) = \frac{1}{\sqrt{N_1N_2N_3}}
+    \prod_{d=1}^{3}\sum_{n_d=0}^{N_d-1} e^{i n_d \qvec\cdot\avec_d},
+}
+\label{eq:lattice_sum}
+\end{equation}
+
+each axis sum being the geometric series $\bigl(1-e^{iN_d\theta_d}\bigr)/
+\bigl(1-e^{i\theta_d}\bigr)$ with $\theta_d = \qvec\cdot\avec_d$. The prefactor
+preserves the $1/\sqrt{\Na}$ normalization after repetition; $\Lambda = 1$ when
+all repeats are $1$.
+
+% ======================================================================
+\section{Preparing the Time Series}
+% ======================================================================
+
+\subsection{Mean Subtraction}
+
+Enabled by default, disabled by \texttt{-\/-no-subtract-mean}:
+
+\begin{equation}
+    \tilde s^\alpha(\qvec,t) = s^\alpha(\qvec,t) - \langle s^\alpha(\qvec)\rangle_t,
+    \qquad
+    \langle s^\alpha\rangle_t = \frac{1}{\Nt}\sum_{t} s^\alpha(\qvec,t),
+\end{equation}
+
+which removes the elastic ($\omega = 0$) line and any static background. It must
+precede the window: tapering a series that still carries a DC offset would
+imprint the shape of the window itself onto the spectrum.
+
+\subsection{Data Window}
+\label{sec:window}
+
+\begin{equation}
+\boxed{
+    \tilde s^\alpha_{\text{win}}(\qvec,t) = w(t)\,\tilde s^\alpha(\qvec,t),
+    \qquad t = 0,\dots,\Nt-1,
+}
+\label{eq:window}
+\end{equation}
+
+with $w$ either the Hann taper $\tfrac12\bigl[1-\cos(2\pi n/(\Nt-1))\bigr]$
+(\texttt{-\/-window hann}, default) or unity (\texttt{-\/-window none}).
+
+\begin{remark}[Why a data window and not a lag window]
+The window acts on $s(\qvec,t)$, \emph{before} the correlation is formed. Its
+job is to suppress \textbf{spectral leakage}. The record is finite and the
+transform treats it as periodic, so unless a mode completes a whole number of
+cycles within the record the splice between last and first frame is a
+discontinuity, and its power smears across every frequency. Pulling both ends to
+zero removes that discontinuity. Measured on a two-mode test signal, a weak
+branch $10^{-6}$ below a strong one is overestimated by a factor $\sim 800$
+without the window and by a factor $1.1$ with it.
+
+Tapering the correlation $C(\tau)$ instead --- a lag window, the
+Blackman--Tukey construction --- addresses a different problem, the statistical
+scatter of the estimate. It is deliberately \textbf{not} offered here, because
+it is only usable when the physical linewidth greatly exceeds the frequency
+resolution $1/(\Nt\Delta t)$. Below that threshold it inflates the measured
+linewidth by an order of magnitude, destroying the very quantity a
+damped-oscillator fit is after. When variance genuinely needs reducing, the
+correct remedy is to average independent trajectories or symmetry-equivalent
+$\qvec$-points; lengthening a single trajectory does not help, since the extra
+frames buy a finer frequency grid rather than a better value per bin.
+\end{remark}
+
+% ======================================================================
+\section{Time-Correlation Tensor}
+\label{sec:corr}
+% ======================================================================
+
+\begin{equation}
+\boxed{
+    C^{ab}(\qvec,\tau) = \frac{1}{M_\tau}\sum_{t=0}^{\Nt-\tau-1}
+    \tilde s^a_{\text{win}}(\qvec,t+\tau)\,
+    \tilde s^{b*}_{\text{win}}(\qvec,t),
+    \qquad a,b\in\{x,y,z\},
+}
+\label{eq:corr}
+\end{equation}
+
+for $\tau = 0,\dots,\Nt-1$, with
+
+\begin{itemize}
+    \item \textbf{biased} (\texttt{-\/-corr-norm biased}, default):
+    $M_\tau = \Nt$. Constant denominator; keeps the estimate a genuine power
+    spectrum, i.e.\ positive semidefinite.
+    \item \textbf{unbiased} (\texttt{-\/-corr-norm unbiased}):
+    $M_\tau = \Nt-\tau$. Corrects for the shrinking number of contributing
+    pairs, but destroys positive semidefiniteness, so the transform can go
+    negative. See Remark~\ref{rem:corrplus} for when this is nevertheless the
+    right choice.
+\end{itemize}
+
+\subsection{Evaluation by FFT}
+\label{sec:wk}
+
+Equation~\eqref{eq:corr} is not evaluated as written. By the Wiener--Khinchin
+theorem,
+
+\begin{equation}
+\boxed{
+    C^{ab} \;\propto\; \mathcal{F}^{-1}\Bigl[\,
+        \hat s^a \cdot \overline{\hat s^b}\,\Bigr],
+    \qquad \hat s^a = \mathcal{F}\bigl[\tilde s^a_{\text{win}}\bigr],
+}
+\label{eq:wk}
+\end{equation}
+
+where the transform is taken over a sequence zero-padded to length
+$L \ge 2\Nt$. The padding makes the circular correlation of the padded signal
+equal the linear correlation of the original, so Eq.~\eqref{eq:wk} is an exact
+identity rather than an approximation.
+
+Three forward transforms (one per Cartesian component) and nine inverse
+transforms give the whole tensor, at $O(\Nt\log\Nt)$ instead of the $O(\Nt^2)$
+of the explicit double loop. Measured speed-ups range from $\sim50\times$ at
+$\Nt = 2\times10^3$ to $\sim450\times$ at $\Nt = 2\times10^4$; the gap exceeds
+the raw operation count because the direct form is a Python-level loop over
+$\Nt$ separate array calls.
+
+All of this runs in complex128 regardless of the storage dtype of the
+trajectory. Since $s(\qvec,t)$ is only $(\Nt,3)$ the promotion is free in
+memory, while the long accumulations would otherwise eat well into float32's
+seven digits.
+
+\subsection{Extension to Negative Lags}
+
+\begin{equation}
+\boxed{
+    C^{ab}(\qvec,-\tau) = \overline{C^{ba}(\qvec,\tau)},
+    \qquad \tau = 1,\dots,\Nt-1,
+}
+\label{eq:herm}
+\end{equation}
+
+giving a two-sided sequence of length $2\Nt-1$ indexed
+$\tau = -(\Nt-1),\dots,\Nt-1$. Note the \textbf{index swap}: writing
+$\overline{C^{ab}(\tau)}$ instead would silently give the wrong answer for every
+off-diagonal element. This symmetry is what makes the following transform real.
+
+% ======================================================================
+\section{Frequency Domain}
+\label{sec:freq}
+% ======================================================================
+
+\begin{equation}
+\boxed{
+    S^{ab}(\qvec,\omega_k) = \sum_{\tau=-(\Nt-1)}^{\Nt-1}
+    e^{-i\omega_k\tau\Delta t}\,C^{ab}(\qvec,\tau),
+    \qquad \omega_k \ge 0,
+}
+\label{eq:sqw}
+\end{equation}
+
+evaluated by FFT after \texttt{np.fft.ifftshift} maps the two-sided sequence
+into FFT order. There is \textbf{no $\Delta t$ prefactor}: the code returns the
+bare DFT sum, so $S$ is a relative intensity and absolute values are not
+comparable across runs that use different $\Delta t$.
+
+At each frequency the result is a $3\times3$ matrix, Hermitian in $(a,b)$ by
+Eq.~\eqref{eq:herm} and positive semidefinite as a spectral-density matrix ---
+the property Sec.~\ref{sec:channels} relies on.
+
+The frequency grid follows the transform length $L = 2\Nt-1$:
+
+\begin{equation}
+    f_k = \frac{k}{(2\Nt-1)\,\Delta t\,[\mathrm{s}]\times10^{12}}\ \mathrm{THz},
+    \qquad k = 0,\dots,\Nt-1.
+\end{equation}
+
+Because $L$ is odd there are exactly $\Nt$ non-negative bins, the largest being
+$(\Nt-1)/[(2\Nt-1)\Delta t]$, which approaches but never reaches the Nyquist
+frequency $1/(2\Delta t)$.
+
+\begin{remark}[Why only $\omega \ge 0$]
+Discarding negative frequencies is not a consequence of Eq.~\eqref{eq:herm}.
+That makes $S$ real but \emph{not} even in $\omega$: a single propagating mode
+$s(\qvec,t) = Ae^{-i\omega_0 t}$ gives $C(\tau) = \lvert A\rvert^2
+e^{-i\omega_0\tau}$, which peaks at $\omega = -\omega_0$ only. Evenness holds
+when the dynamics are classical \emph{and} the system is centrosymmetric:
+reality of the field gives $S(\qvec,\omega) = S(-\qvec,-\omega)$ and inversion
+symmetry gives $S(\qvec,\omega) = S(-\qvec,\omega)$. For chiral systems
+(Dzyaloshinskii--Moriya, handed magnons) that fails and weight residing at
+$\omega < 0$ is genuinely lost.
+\end{remark}
+
+\begin{remark}[Relation to the periodogram]
+With the data window of Sec.~\ref{sec:window}, $C$ is the autocorrelation of the
+windowed series, so by Eq.~\eqref{eq:wk} its transform is exactly
+$\lvert\mathcal{F}[\tilde s\cdot w]\rvert^2$ --- a zero-padded windowed
+periodogram. The two routes agree to $6\times10^{-16}$ for both window choices.
+The only difference is the frequency grid: $2\Nt-1$ bins here against $\Nt$ for
+a direct periodogram, and the extra bins are zero-padding interpolation, not
+improved resolution, which remains set by $\Nt\Delta t$.
+
+What the correlation route retains that a periodogram does not is direct access
+to $C^{ab}(\qvec,\tau)$ itself (Remark~\ref{rem:corrplus}) and the
+\texttt{unbiased} normalization.
+\end{remark}
+
+% ======================================================================
+\section{Output Channels}
+\label{sec:channels}
+% ======================================================================
+
+Every quantity this program can report is a real linear form on the tensor:
+
+\begin{equation}
+\boxed{
+    \text{channel}(\qvec,\omega)
+    = \sum_{a,b} W_{ab}\,\operatorname{Re}S^{ab}(\qvec,\omega),
+}
+\label{eq:channel}
+\end{equation}
+
+so a channel is completely specified by one real $3\times3$ weight matrix
+$\Wmat$. The \texttt{-\/-component} tokens are names for such matrices.
+
+\subsection{Token Grammar}
+
+\begin{center}
+\texttt{token := term ('+' term)*}
+\end{center}
+
+Tokens separated by spaces produce separate outputs; terms joined by \texttt{+}
+are summed into one. Thus \texttt{-\/-component 1+2 3} emits two curves,
+$S^{xx}+S^{xy}$ and $S^{xz}$.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{lll}
+        \toprule
+        Term & $\Wmat$ & Meaning \\
+        \midrule
+        \texttt{1}\,\dots\,\texttt{9} & $e_ae_b^{\mathsf T}$ & row-major: $1=xx$, $2=xy$, $3=xz$, $4=yx$, \dots \\
+        \texttt{xx}\,\dots\,\texttt{zz} & $e_ae_b^{\mathsf T}$ & same, named by axis pair \\
+        \texttt{x}, \texttt{y}, \texttt{z} & $e_ae_a^{\mathsf T}$ & shorthand for \texttt{xx}, \texttt{yy}, \texttt{zz} \\
+        \texttt{L} & $\qhat\qhat^{\mathsf T}$ & longitudinal to $\qvec$ \\
+        \texttt{T} & $\mathbf{I}-\qhat\qhat^{\mathsf T}$ & transverse to $\qvec$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{Terms and their weight matrices. \texttt{L} and \texttt{T} depend
+    on the direction of $\qvec$ and are rebuilt per $\qvec$-point; the rest are
+    constants. The default \texttt{1+5+9} is the trace.}
+\end{table}
+
+At $\qvec\to0$ the longitudinal direction is undefined: \texttt{L} contributes
+nothing and \texttt{T} reduces to the full trace, the natural $\Gamma$-point
+limit.
+
+\subsection{Equivalence with Projections}
+
+A projection of the field is a special case of Eq.~\eqref{eq:channel}. For the
+longitudinal case, $s^L = \sum_a\hat q^a s^a$ with real $\qhat$ gives
+
+\begin{equation}
+    C^L(\tau) = \sum_{a,b}\hat q^a\hat q^b\,C^{ab}(\tau),
+\end{equation}
+
+which is exactly the \texttt{L} weight. For the transverse case,
+$P = \mathbf{I}-\qhat\qhat^{\mathsf T}$ is real, symmetric and idempotent, so
+
+\begin{equation}
+    \sum_a C^{T,aa}(\tau)
+    = \sum_{c,d}\bigl(P^{\mathsf T}P\bigr)_{cd}C^{cd}(\tau)
+    = \sum_{c,d}P_{cd}\,C^{cd}(\tau),
+\end{equation}
+
+the \texttt{T} weight. Both identities were confirmed numerically against an
+independent projection implementation, agreeing to $\sim10^{-8}$, the precision
+of complex64 arithmetic.
+
+\subsection{Clipping}
+
+$S^{ab}$ is Hermitian positive semidefinite at each frequency, so
+
+\begin{equation}
+    \sum_{a,b}W_{ab}S^{ab} \ge 0
+    \quad\Longleftrightarrow\quad
+    \Wmat \text{ is symmetric positive semidefinite}.
+\end{equation}
+
+That is precisely the condition under which the code clips negative values ---
+which are then numerical noise --- to zero. Channels whose $\Wmat$ is not
+symmetric PSD are signed quantities and keep their sign: any single off-diagonal
+element, and mixed groups such as \texttt{1+2}. This is the exact generalisation
+of the older diagonal/off-diagonal rule, which cannot classify a group.
+
+\begin{remark}[The imaginary part]
+For $u \ne v$ the quantity $S^{uv}$ is complex, and Eq.~\eqref{eq:channel}
+retains only its real part. The antisymmetric imaginary part carries the chiral
+information (spin chirality, Dzyaloshinskii--Moriya terms) and is currently
+discarded.
+\end{remark}
+
+% ======================================================================
+\section{Output}
+% ======================================================================
+
+\subsection{NPZ Contents}
+
+\begin{itemize}
+    \item \texttt{timesteps} --- LAMMPS timestep of each retained frame,
+    \item \texttt{q\_frac}, \texttt{q\_vectors} --- $\qvec$ in primitive fractional and Cartesian (\AA$^{-1}$) coordinates,
+    \item \texttt{q\_path\_distance}, \texttt{q\_node\_indices} --- plot abscissa and high-symmetry node positions,
+    \item \texttt{freq\_thz}, \texttt{energy\_meV} --- frequency grid, in THz and in meV ($E = hf$, $h \approx 4.13567$~meV$\cdot$ps),
+    \item \texttt{sqw} --- the channel, shape $(\Nq,\Nw)$,
+    \item \texttt{components} --- the token that produced it,
+    \item \texttt{field\_columns}, \texttt{lattice}, \texttt{reciprocal\_lattice}, \texttt{translation\_repeats}, \texttt{dt\_fs}, \texttt{corr\_norm} --- provenance,
+    \item \texttt{corr\_plus} --- present only with \texttt{-\/-save-corr-plus}; the one-sided $C^{ab}(\qvec,\tau)$, shape $(\Nq,\Nt,3,3)$.
+\end{itemize}
+
+A single requested channel writes to \texttt{-\/-output} unchanged; several
+channels each get their own file with a \texttt{\_<token>} suffix, with
+\texttt{+} rendered as \texttt{p}.
+
+\subsection{The Correlation Itself}
+
+\begin{remark}[Reading a lifetime from \texttt{-\/-save-corr-plus}]
+\label{rem:corrplus}
+$C(\qvec,\tau)$ is the time-domain view of the same physics: its oscillation
+period is the mode frequency and the decay of its envelope is the linewidth,
+i.e.\ the magnon lifetime. Fitting that envelope is often more robust than
+fitting a Lorentzian in frequency, because the frequency estimate scatters by
+$\sim100\%$ per bin while $C(\tau)$ at small $\tau$ is determined by many sample
+pairs.
+
+Two settings will corrupt the envelope, and both are silent:
+\begin{itemize}
+    \item \textbf{biased normalization} divides by a constant $\Nt$ while only
+    $\Nt-\tau$ terms contribute, imprinting a spurious triangular decay
+    $(\Nt-\tau)/\Nt$. Use \texttt{-\/-corr-norm unbiased}, which cancels it
+    exactly.
+    \item \textbf{the data window} multiplies $C$ by the window's own
+    autocorrelation. Use \texttt{-\/-window none}.
+\end{itemize}
+On an undamped coherent test signal, whose true envelope is flat, the default
+\texttt{hann}/\texttt{biased} combination decays to $0.7\%$ by $3$~ps --- a
+lifetime that is entirely an artefact of the analysis. The combination
+\texttt{-\/-window none -\/-corr-norm unbiased} reproduces the flat envelope.
+
+The frequency-domain and time-domain uses therefore want \emph{opposite}
+settings: \texttt{hann}/\texttt{biased} for $S(\qvec,\omega)$,
+\texttt{none}/\texttt{unbiased} for $C(\qvec,\tau)$.
+\end{remark}
+
+% ======================================================================
+\section{Summary of the Algorithm}
+% ======================================================================
+
+For each $\qvec$-point on the path:
+
+\begin{enumerate}
+    \item \textbf{Spatial FT} --- Eq.~\eqref{eq:spatial_ft}, including the
+    lattice-sum factor $\Lambda(\qvec)$ of Eq.~\eqref{eq:lattice_sum}.
+    \item \textbf{Subtract the mean} --- removes the elastic line.
+    \item \textbf{Data window} --- Eq.~\eqref{eq:window}, suppresses leakage.
+    \item \textbf{Correlate} --- the full tensor Eq.~\eqref{eq:corr}, evaluated
+    by the zero-padded FFT identity Eq.~\eqref{eq:wk}.
+    \item \textbf{Extend to negative lags} --- Eq.~\eqref{eq:herm}, minding the
+    index swap.
+    \item \textbf{Transform} --- Eq.~\eqref{eq:sqw}, keeping $\omega \ge 0$.
+    \item \textbf{Contract with each channel weight} --- Eq.~\eqref{eq:channel},
+    clipping only where $\Wmat$ is symmetric PSD.
+\end{enumerate}
+
+Steps 1--7 form the serial per-$\qvec$ kernel; \texttt{map\_over\_q}
+distributes it across MPI ranks and gathers the result. Because each
+$\qvec$-point is independent, results are bitwise identical for any rank count.
+
+% ======================================================================
+\section{Notation}
+% ======================================================================
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        Symbol & Meaning \\
+        \midrule
+        $\Na$ & Atoms retained after the field threshold \\
+        $\Nt$ & Time frames \\
+        $\Nq$, $\Nw$ & $\qvec$-points, frequency bins \\
+        $\Delta t$ & Interval between saved frames (fs) \\
+        $\qvec$, $\qhat$ & Wave-vector (\AA$^{-1}$) and its unit vector \\
+        $\field_j^\alpha(t)$ & Field component $\alpha$ on atom $j$ \\
+        $w_j$, $w(t)$ & Per-atom mass weight; data window \\
+        $s^\alpha(\qvec,t)$ & Spatial Fourier amplitude, Eq.~\eqref{eq:spatial_ft} \\
+        $\Lambda(\qvec)$ & Lattice-sum factor, Eq.~\eqref{eq:lattice_sum} \\
+        $C^{ab}(\qvec,\tau)$ & Correlation tensor, Eq.~\eqref{eq:corr} \\
+        $S^{ab}(\qvec,\omega)$ & Structure-factor tensor, Eq.~\eqref{eq:sqw} \\
+        $\Wmat$ & Channel weight matrix, Eq.~\eqref{eq:channel} \\
+        $M_\tau$ & Correlation denominator: $\Nt$ or $\Nt-\tau$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{Notation.}
+\end{table}
+
+\end{document}

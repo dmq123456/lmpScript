@@ -28,14 +28,7 @@ from correlate import (
 )
 from driver import map_over_q
 from fields import spatial_fourier_transform, validate_translation_repeats
-from geometry import (
-    fold_by_max,
-    folded_reciprocal_lattice,
-    frac_to_cart_q,
-    load_q_file,
-    unfold_q_path,
-    validate_bz_folded,
-)
+from geometry import load_q_file
 from mpi import resolve_mpi_comm
 from plot import plot_sqw
 from result import SQWResult
@@ -79,8 +72,6 @@ def main(argv=None) -> None:
     is_root = rank == 0
 
     channels = parse_channels(args.component)
-    bz_folded = validate_bz_folded(args.bz_folded)
-    bz_active = bool(np.any(bz_folded != 1))
     repeats = validate_translation_repeats(args.translation_repeats)
 
     # ---- input ------------------------------------------------------
@@ -115,23 +106,10 @@ def main(argv=None) -> None:
             print(f"[INFO] Field threshold: {args.spin_threshold:g}")
 
     # ---- q-path -----------------------------------------------------
-    q_frac_input, q_node_indices, q_node_labels = load_q_file(
+    q_frac, q_node_indices, q_node_labels = load_q_file(
         args.qfile, args.points_per_segment
     )
-    q_input_reciprocal = traj.reciprocal
-    if bz_active:
-        q_input_reciprocal = folded_reciprocal_lattice(traj.reciprocal, bz_folded)
-        q_frac_eval, shifts = unfold_q_path(q_frac_input, bz_folded)
-        multiplicity = int(shifts.shape[0])
-        if is_root:
-            print(f"[INFO] Folded-BZ factors: {tuple(int(v) for v in bz_folded)}")
-            print(f"[INFO] Evaluating {q_frac_eval.shape[0]} unfolded q-points "
-                  f"({multiplicity} per folded q)")
-    else:
-        q_frac_eval = q_frac_input
-        multiplicity = 1
-
-    q_cart = traj.q_frac_to_cart(q_frac_eval)
+    q_cart = traj.q_frac_to_cart(q_frac)
     if is_root:
         print(f"[INFO] q-points: {q_cart.shape[0]}")
 
@@ -171,17 +149,6 @@ def main(argv=None) -> None:
     if not is_root:
         return
 
-    # ---- fold back --------------------------------------------------
-    if bz_active:
-        sqw_all = fold_by_max(sqw_all, q_frac_input.shape[0], multiplicity)
-        q_frac_out = q_frac_input
-        q_cart_out = frac_to_cart_q(q_frac_input, q_input_reciprocal)
-        print(f"[INFO] Folded {multiplicity} branches back onto "
-              f"{q_frac_input.shape[0]} q-points by per-frequency max")
-    else:
-        q_frac_out = q_frac_eval
-        q_cart_out = q_cart
-
     # ---- output -----------------------------------------------------
     multi = len(channels) > 1
     out_path = Path(args.output)
@@ -191,18 +158,14 @@ def main(argv=None) -> None:
         tag = _safe_tag(channel.label)
         result_c = SQWResult(
             timesteps=traj.timesteps,
-            q_frac=q_frac_out,
-            q_vectors=q_cart_out,
+            q_frac=q_frac,
+            q_vectors=q_cart,
             freq_thz=freq_thz,
             sqw=sqw_all[ic],
             lattice=traj.lattice,
             reciprocal_lattice=traj.reciprocal,
             dt_fs=args.dt_fs,
             components=channel.label,
-            q_frac_input=q_frac_input if bz_active else None,
-            q_input_reciprocal_lattice=q_input_reciprocal if bz_active else None,
-            bz_folded=bz_folded if bz_active else None,
-            q_fold_multiplicity=multiplicity if bz_active else None,
             field_columns=np.asarray(traj.field_columns),
             translation_repeats=repeats,
             q_node_indices=q_node_indices,
@@ -219,7 +182,7 @@ def main(argv=None) -> None:
         if args.plot:
             path = _suffixed(plot_path, tag) if multi else plot_path
             plot_sqw(
-                q_vectors=q_cart_out,
+                q_vectors=q_cart,
                 freq_thz=freq_thz,
                 sqw=sqw_all[ic],
                 outfile=str(path),

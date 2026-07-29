@@ -64,7 +64,6 @@ $$\text{channel}(q,\omega)=\sum_{ab}W_{ab}\,\operatorname{Re}S^{ab}(q,\omega)$$
 
 旧代码里这三个组合会直接报错，现在都可用：
 
-- `--component` + `--bz-folded`
 - `--component` + `--save-corr-plus`（现在导出完整的 $C^{ab}$，形状 `(nq, nt, 3, 3)`，是旧版 `(nq, nt, 3)` 的超集）
 - 任意分组求和
 
@@ -107,3 +106,26 @@ $$\text{channel}(q,\omega)=\sum_{ab}W_{ab}\,\operatorname{Re}S^{ab}(q,\omega)$$
 2. `--corr-norm unbiased` —— 但它破坏半正定性，谱会出负值，实用价值存疑
 
 如果这两项都不需要，corr 路线可以整体删掉，改用 periodogram（后者还省一次逆变换）。
+
+
+---
+
+# 已删除的功能
+
+## `--bz-folded`
+
+折叠布里渊区整体移除。它做的是：把每个折叠胞坐标下的 $\qvec$ 展开成 $M=F_xF_yF_z$ 个原胞坐标点，各自算谱，再逐频率取 max 收拢回一条。
+
+删除理由：
+
+1. **那是展示逻辑，不是物理。** 计算本身只是「在 M 个 q 点上算 $S$」；最后的 max 收拢是画图时的取舍，属于后处理
+2. **max 是武断且不守恒的选择**，硬编码在引擎里就无法更换
+3. **它悄悄把 q 点数乘以 M**，用户看到 13 个 q 点，实际算了 $13M$ 个
+
+同时移除的 npz 字段：`q_frac_input`、`q_input_reciprocal_lattice`、`bz_folded`、`q_fold_multiplicity`。
+
+**如何恢复等价结果**：自己生成展开后的 q 列表交给 `qfile`，算完后对 npz 做 reshape + 归约。好处是归约规则（max / sum / 加权）由你自己定。
+
+## npz 中的 `projection` 与 `freq_mode`
+
+前者随投影路线一起消失（改用 `--component`），后者是 periodogram 路线的 `--freq-mode direct` 遗留物，corr 路线固定走 FFT 网格。

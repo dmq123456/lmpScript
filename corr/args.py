@@ -56,11 +56,6 @@ def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--points-per-segment", type=int, default=101,
                         help="Interpolated q-points per path segment")
     parser.add_argument(
-        "--bz-folded", type=int, nargs=3, metavar=("FX", "FY", "FZ"), default=(1, 1, 1),
-        help="Interpret the q file in a Brillouin zone folded by these factors; "
-             "unfolded branches are reduced by max intensity at each frequency",
-    )
-    parser.add_argument(
         "--translation-repeats", type=int, nargs=3, metavar=("N1", "N2", "N3"), default=(1, 1, 1),
         help="Finite repeats of the loaded cell in the structure-factor sum",
     )
