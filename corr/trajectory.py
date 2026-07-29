@@ -31,7 +31,9 @@ class FieldTrajectory:
     spins        (nt, natoms, 3)  the field itself
     positions    (1 or nt, natoms, 3)  frozen first frame, or the full history
     lattice      (3, 3)  supercell real-space vectors as rows
-    reciprocal   (3, 3)  primitive-cell reciprocal vectors as rows
+    reciprocal   (3, 3)  primitive-cell reciprocal vectors as rows, or None
+                         when no supercell was given (a q-free calculation
+                         such as the DOS never needs it)
     atom_types   (natoms,) or None
     weights      (natoms,) or None   sqrt(mass) when mass weighting is on
     """
@@ -40,7 +42,7 @@ class FieldTrajectory:
     spins: np.ndarray
     positions: np.ndarray
     lattice: np.ndarray
-    reciprocal: np.ndarray
+    reciprocal: np.ndarray | None = None
     atom_types: np.ndarray | None = None
     weights: np.ndarray | None = None
     field_columns: tuple[str, str, str] = ("sx", "sy", "sz")
@@ -53,11 +55,19 @@ class FieldTrajectory:
     def n_atoms(self) -> int:
         return int(self.spins.shape[1])
 
+    def _require_reciprocal(self) -> np.ndarray:
+        if self.reciprocal is None:
+            raise ValueError(
+                "This trajectory was loaded without a supercell, so no reciprocal "
+                "lattice was built. Pass supercell= to load_trajectory if you need q."
+            )
+        return self.reciprocal
+
     def q_frac_to_cart(self, q_frac: np.ndarray) -> np.ndarray:
-        return frac_to_cart_q(q_frac, self.reciprocal)
+        return frac_to_cart_q(q_frac, self._require_reciprocal())
 
     def q_cart_to_frac(self, q_cart: np.ndarray) -> np.ndarray:
-        return cart_to_frac_q(q_cart, self.reciprocal)
+        return cart_to_frac_q(q_cart, self._require_reciprocal())
 
     def set_mass_weights(self, masses_per_type) -> None:
         """Weight each atom by sqrt(mass) before the spatial Fourier sum
@@ -89,6 +99,8 @@ class FieldTrajectory:
         print(f"{prefix} Supercell real-space lattice vectors (rows):")
         for i, v in enumerate(self.lattice, start=1):
             print(f"{prefix}   a{i} = ({v[0]: .10f}, {v[1]: .10f}, {v[2]: .10f})")
+        if self.reciprocal is None:
+            return
         print(f"{prefix} Primitive-cell reciprocal lattice vectors (rows):")
         for i, v in enumerate(self.reciprocal, start=1):
             print(f"{prefix}   b{i} = ({v[0]: .10f}, {v[1]: .10f}, {v[2]: .10f})")
@@ -96,7 +108,7 @@ class FieldTrajectory:
 
 def load_trajectory(
     filename: str | Path,
-    supercell: tuple[int, int, int] | np.ndarray,
+    supercell: tuple[int, int, int] | np.ndarray | None = None,
     *,
     use_instantaneous_pos: bool = False,
     dtype=np.float32,
@@ -115,7 +127,8 @@ def load_trajectory(
     The primitive cell is inferred by dividing the supercell lattice by the
     --supercell repeats; the reciprocal lattice is built from that primitive
     cell, so q-points in fractional coordinates always refer to the primitive
-    Brillouin zone.
+    Brillouin zone. Pass supercell=None for a calculation that never touches q
+    -- the DOS, for instance -- and no reciprocal lattice is built.
     """
     timesteps, positions, spins, lattice, atom_types = load_spin_dump(
         filename,
@@ -131,8 +144,11 @@ def load_trajectory(
         progress=progress,
         progress_reports=progress_reports,
     )
-    primitive = primitive_lattice_from_supercell(lattice, np.asarray(supercell))
-    reciprocal = reciprocal_lattice_from_real(primitive)
+    if supercell is None:
+        reciprocal = None
+    else:
+        primitive = primitive_lattice_from_supercell(lattice, np.asarray(supercell))
+        reciprocal = reciprocal_lattice_from_real(primitive)
     from io_dump import normalize_field_columns
 
     return FieldTrajectory(

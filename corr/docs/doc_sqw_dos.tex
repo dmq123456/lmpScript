@@ -1,0 +1,422 @@
+\documentclass[12pt, a4paper, oneside]{article}
+\usepackage{amsmath, amsthm, amssymb, bm, graphicx, hyperref, mathrsfs, booktabs}
+\usepackage[margin=2.5cm]{geometry}
+
+\linespread{1.3}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\qvec}{\mathbf{q}}
+\newcommand{\rvec}{\mathbf{r}}
+\newcommand{\vvec}{\mathbf{v}}
+\newcommand{\qhat}{\hat{\mathbf{q}}}
+\newcommand{\Nt}{N_t}
+\newcommand{\Na}{N}
+\newcommand{\Nw}{N_\omega}
+\newcommand{\field}{S}
+\newcommand{\Wmat}{\mathbf{W}}
+\newcommand{\Imat}{\mathbf{I}}
+
+\begin{document}
+
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+    \Huge\textbf{Density of States from the\\On-Site Time Correlation}
+
+    \vspace{1cm}
+    \Large\textbf{Algorithm and Formulas}
+
+    \vspace{0.8cm}
+    \large \texttt{corr/sqw\_dos.py}
+\end{center}
+\vspace*{\fill}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ======================================================================
+\section{Overview}
+% ======================================================================
+
+The density of states is the dynamic structure factor integrated over the
+Brillouin zone,
+
+\begin{equation}
+    D(\omega) = \sum_{\qvec} S(\qvec,\omega).
+\end{equation}
+
+Computing it by evaluating $S(\qvec,\omega)$ on a $\qvec$-mesh and summing
+would be wasteful, because the sum can be done analytically first. Writing the
+spatial Fourier amplitude as
+
+\begin{equation}
+    s^\alpha(\qvec,t) = \frac{1}{\sqrt{\Na}}\sum_j \field_j^\alpha(t)\,
+                        e^{i\qvec\cdot\rvec_j},
+\end{equation}
+
+and summing the correlation over a complete $\qvec$-grid of $\Na$ points,
+
+\begin{equation}
+    \sum_{\qvec} s^\alpha(\qvec,t{+}\tau)\,s^{\beta*}(\qvec,t)
+    = \frac{1}{\Na}\sum_{\qvec}\sum_{jk}
+        \field_j^\alpha(t{+}\tau)\field_k^\beta(t)\,e^{i\qvec\cdot(\rvec_j-\rvec_k)} ,
+\end{equation}
+
+the $\qvec$-sum collapses through
+$\sum_{\qvec}e^{i\qvec\cdot(\rvec_j-\rvec_k)} = \Na\,\delta_{jk}$, leaving
+
+\begin{equation}
+\boxed{
+    \sum_{\qvec} s^\alpha(\qvec,t{+}\tau)\,s^{\beta*}(\qvec,t)
+    = \sum_j \field_j^\alpha(t{+}\tau)\,\field_j^\beta(t).
+}
+\label{eq:parseval}
+\end{equation}
+
+The Brillouin-zone integral of the correlation is exactly the sum of the
+\emph{on-site} correlations. No $\qvec$ appears on the right-hand side, no
+$\qvec$-mesh has to be chosen, and nothing is approximated: this is Parseval's
+identity, not a sampling scheme.
+
+The chain is therefore
+
+\begin{equation}
+    \field_j^\alpha(t) \;\longrightarrow\; x_j(t)
+    \;\longrightarrow\; C(\tau) \;\longrightarrow\; D(\omega),
+\end{equation}
+
+where $x_j$ is a scalar time series per atom, obtained by projecting the field
+onto whichever direction in spin space the requested channel names
+(Sec.~\ref{sec:channels}).
+
+\begin{remark}[Cost]
+The $\qvec$-mesh route costs $O(N_q\,\Nt\,\Na)$ for the spatial transforms
+alone. This route costs $O(\Na\,\Nt\log\Nt)$ in total --- one transform per
+atom, and no $\qvec$-loop at all.
+\end{remark}
+
+\begin{remark}[Code layout]
+The four lines of \texttt{dos\_for\_channel} in \texttt{sqw\_dos.py} are the
+whole calculation. The numerics live in \texttt{dos.py}; the channel model is
+shared with \texttt{channels.py} and the window with \texttt{correlate.py}, so
+the conventions are identical to those of \texttt{sqw\_spin\_corr.py} (see
+\texttt{doc\_sqw\_spin\_corr.tex}). There is no MPI: the whole calculation is
+cheaper than reading the dump.
+\end{remark}
+
+% ======================================================================
+\section{Input}
+% ======================================================================
+
+The same trajectory as the $\qvec$-resolved route: a three-component field
+$\field_j^\alpha(t)$ on $\Na$ atoms over $\Nt$ frames, optionally mass-weighted
+by $w_j = \sqrt{m_{\text{type}(j)}}$ and optionally filtered by
+$\max_t\lVert\field_j\rVert \le \tau_{\text{spin}}$.
+
+Atomic \emph{positions} are never read. Neither is the reciprocal lattice ---
+there is no $\qvec$ to express --- so no supercell need be supplied.
+
+% ======================================================================
+\section{Channels}
+\label{sec:channels}
+% ======================================================================
+
+Which component of the spin should be correlated? That is the only choice to
+make, and it is expressed exactly as in the $\qvec$-resolved route: a channel
+is a real $3\times3$ weight matrix $\Wmat$, and the quantity it names is
+
+\begin{equation}
+\boxed{
+    \sum_{ab} W_{ab}\,C^{ab}(\tau),
+    \qquad
+    C^{ab}(\tau) = \sum_j \bigl\langle \field_j^a(t{+}\tau)\,\field_j^b(t)\bigr\rangle .
+}
+\label{eq:channel}
+\end{equation}
+
+The \texttt{-\/-component} grammar is unchanged: tokens separated by spaces
+produce separate curves, terms joined by \texttt{+} are summed into one, and
+the default \texttt{1+5+9} is the trace.
+
+\subsection{Two Restrictions}
+
+\textbf{\texttt{L} and \texttt{T} are unavailable.} Their weights are
+$\qhat\qhat^{\mathsf T}$ and $\Imat-\qhat\qhat^{\mathsf T}$, built from the
+\emph{direction} of $\qvec$. The DOS has integrated $\qvec$ away, so there is
+no direction left to project on. Requesting them raises an error rather than
+silently returning something else.
+
+\textbf{$\Wmat$ must be symmetric.} A non-symmetric weight --- a bare
+off-diagonal element such as \texttt{2}, or a mixed group such as \texttt{1+2}
+--- names a signed quantity, not a spectral density. A density of states is
+non-negative by definition, so these are rejected. This is the same
+positive-semidefiniteness criterion that decides clipping in the
+$\qvec$-resolved route, applied one step earlier.
+
+\subsection{Evaluation by Eigen-Decomposition}
+
+Equation~\eqref{eq:channel} is not evaluated by building the nine
+cross-correlations and contracting them. Because $\Wmat$ is symmetric it can be
+diagonalised, $\Wmat = \sum_i \lambda_i \vvec_i\vvec_i^{\mathsf T}$, and then
+
+\begin{align}
+    \sum_{ab} W_{ab}\,C^{ab}(\tau)
+    &= \sum_j \sum_i \lambda_i \sum_{ab} v_i^a v_i^b
+        \bigl\langle \field_j^a(t{+}\tau)\field_j^b(t)\bigr\rangle \notag\\
+    &= \sum_i \lambda_i \sum_j
+        \bigl\langle x_j^{(i)}(t{+}\tau)\,x_j^{(i)}(t)\bigr\rangle,
+    \qquad x_j^{(i)} = \vvec_i\cdot\bm{\field}_j .
+    \label{eq:eig}
+\end{align}
+
+Every term is now an ordinary autocorrelation of a real \emph{scalar} series.
+Two consequences:
+
+\begin{itemize}
+    \item only $\operatorname{rank}(\Wmat)$ transforms are needed, at most
+    three, instead of up to nine cross-correlations;
+    \item exactly one spectrum is resident at a time, so the memory high-water
+    mark is one $(\!\sim\!\Nt,\Na)$ array rather than two or more. At
+    $\Nt = 10^4$ and $\Na = 10^3$ that is the difference between roughly
+    $260$ MiB and $780$ MiB.
+\end{itemize}
+
+For the default trace $\Wmat = \Imat$ the eigenvectors are the Cartesian axes
+and Eq.~\eqref{eq:eig} reduces to the obvious procedure: autocorrelate
+$\field^x$, $\field^y$, $\field^z$ and add.
+
+\begin{center}
+\begin{tabular}{lllc}
+    \toprule
+    Token & $\Wmat$ & Directions $\vvec_i$ & Transforms \\
+    \midrule
+    \texttt{1+5+9} (default) & $\Imat$ & $\hat x,\hat y,\hat z$ & 3 \\
+    \texttt{1} & $\operatorname{diag}(1,0,0)$ & $\hat x$ & 1 \\
+    \texttt{1+5} & $\operatorname{diag}(1,1,0)$ & $\hat x,\hat y$ & 2 \\
+    \texttt{2+4} & $e_xe_y^{\mathsf T}+e_ye_x^{\mathsf T}$ & $(\hat x\pm\hat y)/\sqrt2$, $\lambda=\pm1$ & 2 \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+The last row shows that the restriction to symmetric $\Wmat$ is not a
+restriction to diagonal ones: a symmetric off-diagonal combination is perfectly
+computable, it simply corresponds to projecting along a rotated pair of axes.
+
+% ======================================================================
+\section{Preparing the Series}
+% ======================================================================
+
+Before correlating, each projected series $x_j(t)$ has its time average removed
+and is then tapered:
+
+\begin{equation}
+    \tilde x_j(t) = w(t)\,\bigl[x_j(t) - \langle x_j\rangle_t\bigr],
+    \qquad t = 0,\dots,\Nt-1 .
+\end{equation}
+
+The order matters: tapering a series that still carries a DC offset would
+imprint the shape of the window onto the spectrum.
+
+$w$ is a \textbf{data-domain} window --- Hann by default, or unity with
+\texttt{-\/-window none} --- applied to the time series, not to the
+correlation. Its purpose is to suppress spectral leakage: the record is finite
+and the transform treats it as periodic, so unless a mode completes a whole
+number of cycles the splice between last and first frame is a discontinuity
+whose power smears across all frequencies.
+
+\begin{remark}[Why no lag window]
+Tapering $C(\tau)$ instead would reduce the statistical scatter rather than the
+leakage. That is unnecessary here for two reasons. The DOS already sums over
+$\Na$ sites, so its scatter is smaller than that of a single-$\qvec$ spectrum
+by roughly $\sqrt{\Na}$ --- for $10^3$ atoms the curve is already smooth. And
+where further smoothing is wanted, \texttt{-\/-smooth-sigma-thz} provides it
+explicitly and visibly, with a width the user controls, instead of an implicit
+taper. Adding a lag window on top would smooth twice.
+\end{remark}
+
+% ======================================================================
+\section{The Correlation}
+% ======================================================================
+
+\begin{equation}
+\boxed{
+    C(\tau) = \frac{1}{M_\tau\,\Na}\sum_i \lambda_i
+              \sum_j \sum_t \tilde x_j^{(i)}(t{+}\tau)\,\tilde x_j^{(i)}(t),
+    \qquad \tau = 0,\dots,\Nt-1,
+}
+\label{eq:corr}
+\end{equation}
+
+with $M_\tau = \Nt$ for \texttt{-\/-corr-norm biased} (the default, which keeps
+the estimate a genuine power spectrum) or $M_\tau = \Nt-\tau$ for
+\texttt{unbiased} (which removes the triangular bias at the cost of positive
+semidefiniteness).
+
+\subsection{Evaluation}
+
+By the Wiener--Khinchin identity, with the series zero-padded to
+$L \ge 2\Nt$,
+
+\begin{equation}
+\boxed{
+    \sum_t \tilde x(t{+}\tau)\tilde x(t)
+    = \mathcal{F}^{-1}\bigl[\,|\hat x|^2\,\bigr](\tau).
+}
+\end{equation}
+
+The padding makes the circular correlation of the padded signal equal the
+linear correlation of the original, so this is exact. The code takes
+$L = 2^{\lceil \log_2(2\Nt-1)\rceil}$.
+
+The projected field is real, so the half-spectrum routines
+\texttt{rfft}/\texttt{irfft} do the work at half the cost of a complex pair.
+Everything runs in float64 regardless of the storage dtype of the trajectory:
+the sum runs over $\Nt$ terms and would otherwise eat into float32's seven
+digits.
+
+\subsection{Normalisation Convention}
+
+The $1/\Na$ in Eq.~\eqref{eq:corr} is \textbf{per atom}, not per
+atom-times-component. This matters when comparing channels: with a per-atom
+normalisation the identity
+
+\begin{equation}
+    D_{\texttt{1+5+9}}(\omega)
+    = D_{\texttt{1}}(\omega) + D_{\texttt{5}}(\omega) + D_{\texttt{9}}(\omega)
+\end{equation}
+
+holds exactly, whereas dividing by the number of contributing components would
+scale the trace down by three relative to the sum of its parts and make
+absolute values incomparable between channels. With
+\texttt{-\/-normalize max} or \texttt{area} the constant is absorbed anyway;
+it is visible only under \texttt{-\/-normalize none}.
+
+% ======================================================================
+\section{Frequency Domain}
+% ======================================================================
+
+$C(\tau)$ is real and even --- projecting a real field on a real direction
+leaves nothing to conjugate --- so the extension to negative lags is a plain
+mirror, and
+
+\begin{equation}
+\boxed{
+    D(\omega_k) = \sum_{\tau=-(\Nt-1)}^{\Nt-1}
+                  e^{-i\omega_k\tau\Delta t}\,C(|\tau|),
+    \qquad \omega_k \ge 0,
+}
+\end{equation}
+
+evaluated by FFT after \texttt{ifftshift} maps the two-sided sequence into FFT
+order. There is no $\Delta t$ prefactor, so $D$ is a relative intensity. The
+frequency grid follows the transform length $L = 2\Nt-1$,
+
+\begin{equation}
+    f_k = \frac{k}{(2\Nt-1)\,\Delta t\,[\mathrm{s}]\times10^{12}}\ \mathrm{THz},
+    \qquad k = 0,\dots,\Nt-1 ,
+\end{equation}
+
+and negative values are clipped to zero when the channel weight is positive
+semidefinite, which is the exact condition for the result to be a physical
+intensity.
+
+% ======================================================================
+\section{Presentation}
+% ======================================================================
+
+Three optional steps are applied to the raw curve, in this order:
+
+\begin{enumerate}
+    \item \textbf{Trim} to $[f_{\min}, f_{\max}]$
+    (\texttt{-\/-freq-min-thz}, \texttt{-\/-freq-max-thz}).
+    \item \textbf{Smooth} with a Gaussian of width
+    \texttt{-\/-smooth-sigma-thz}, converted to a number of grid points using
+    the median spacing of the trimmed grid. Zero disables it.
+    \item \textbf{Normalise} (\texttt{-\/-normalize}): \texttt{max} divides by
+    the peak, \texttt{area} by $\int D\,df$, \texttt{none} leaves the raw
+    scale.
+\end{enumerate}
+
+Both the raw and the finished curve are stored, so the effect of steps 2--3 can
+always be inspected; \texttt{-\/-plot-raw} overlays them.
+
+% ======================================================================
+\section{Validation}
+% ======================================================================
+
+Checked on \texttt{examples/s4.lammpstrj}, a synthetic trajectory whose spins
+precess coherently at $4.0$~THz in the $xy$ plane ($2048$ frames, $400$ atoms,
+$\Delta t = 2$~fs):
+
+\begin{center}
+\begin{tabular}{lll}
+    \toprule
+    Check & Result & \\
+    \midrule
+    Trace $=$ sum of diagonal channels
+        & $3.5\times10^{-16}$ & machine precision \\
+    Peak of \texttt{1+5+9}, \texttt{1}, \texttt{5}
+        & $4.0293$ THz & the injected mode \\
+    Peak of \texttt{9} ($\field^{zz}$)
+        & $0$ THz & spins precess in $xy$; $\field^z$ is static \\
+    Against the previous implementation
+        & $2.0\times10^{-10}$ & after removing the factor $3$ \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+The third row is the useful one: it confirms that the channel selection really
+does isolate a Cartesian component, since a mode confined to the $xy$ plane
+must leave $\field^{zz}$ with no dynamics at all.
+
+% ======================================================================
+\section{Summary of the Algorithm}
+% ======================================================================
+
+Every step below rests on Eq.~\eqref{eq:parseval}: the Brillouin-zone sum has
+already been done analytically, so no $\qvec$ ever appears.
+
+\begin{enumerate}
+    \item \textbf{Parse channels} --- reject \texttt{L}/\texttt{T} and any
+    non-symmetric weight.
+    \item \textbf{Diagonalise} each $\Wmat$ into directions $\vvec_i$ with
+    weights $\lambda_i$, Eq.~\eqref{eq:eig}.
+    \item For each direction: \textbf{project} $x_j = \vvec_i\cdot\bm{\field}_j$,
+    \textbf{subtract the mean}, \textbf{apply the data window}.
+    \item \textbf{Autocorrelate} by zero-padded \texttt{rfft}/\texttt{irfft},
+    sum over atoms, accumulate with weight $\lambda_i$.
+    \item \textbf{Normalise} by $M_\tau \Na$.
+    \item \textbf{Mirror} to negative lags and \textbf{transform}; clip if
+    $\Wmat$ is positive semidefinite.
+    \item \textbf{Trim, smooth, normalise} for presentation.
+\end{enumerate}
+
+% ======================================================================
+\section{Notation}
+% ======================================================================
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        Symbol & Meaning \\
+        \midrule
+        $\Na$ & Atoms retained after the field threshold \\
+        $\Nt$ & Time frames \\
+        $\Delta t$ & Interval between saved frames (fs) \\
+        $\field_j^\alpha(t)$ & Field component $\alpha$ on atom $j$ \\
+        $\Wmat$ & Channel weight matrix, Eq.~\eqref{eq:channel} \\
+        $\lambda_i,\ \vvec_i$ & Eigenvalues and directions of $\Wmat$, Eq.~\eqref{eq:eig} \\
+        $x_j^{(i)}$ & Projected scalar series $\vvec_i\cdot\bm{\field}_j$ \\
+        $w(t)$ & Data window \\
+        $C(\tau)$ & On-site correlation of the channel, Eq.~\eqref{eq:corr} \\
+        $M_\tau$ & Correlation denominator: $\Nt$ or $\Nt-\tau$ \\
+        $D(\omega)$ & Density of states \\
+        \bottomrule
+    \end{tabular}
+    \caption{Notation.}
+\end{table}
+
+\end{document}
