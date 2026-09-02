@@ -1,0 +1,594 @@
+\documentclass[12pt, a4paper, oneside]{article}
+\usepackage{amsmath, amsthm, amssymb, bm, graphicx, hyperref, mathrsfs, booktabs}
+\usepackage[margin=2.5cm]{geometry}
+
+\linespread{1.3}
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\rvec}{\mathbf{r}}
+\newcommand{\mvec}{\mathbf{m}}
+\newcommand{\avec}{\mathbf{a}}
+\newcommand{\Na}{N}
+\newcommand{\Ntri}{N_\triangle}
+\newcommand{\eps}{\varepsilon}
+
+\begin{document}
+
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+    \Huge\textbf{Topological Charge Density\\on the Lattice}
+
+    \vspace{1cm}
+    \Large\textbf{Algorithm and Formulas}
+
+    \vspace{0.8cm}
+    \large \texttt{corr/tools/topocharge.py}
+\end{center}
+\vspace*{\fill}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ======================================================================
+\section{Overview}
+% ======================================================================
+
+The topological charge of a two-dimensional spin texture is
+
+\begin{equation}
+    Q = \frac{1}{4\pi}\int \mvec\cdot
+        \left(\frac{\partial\mvec}{\partial x}\times
+              \frac{\partial\mvec}{\partial y}\right)\,dx\,dy ,
+    \label{eq:continuum}
+\end{equation}
+
+with $\mvec$ the normalised magnetisation. It counts how many times the texture
+wraps the unit sphere, and is therefore an integer for any configuration on a
+closed surface.
+
+A lattice has no derivatives. Discretising Eq.~\eqref{eq:continuum} by finite
+differences would produce a quantity that is only approximately integer and
+that drifts with thermal noise --- the integrality, the one property worth
+having, would be the first casualty. The standard construction of Berg and
+L\"uscher instead covers the plane with elementary, non-overlapping,
+anticlockwise-ordered triangles and assigns to each the signed area $A_l$ that
+its three spins span on the unit sphere:
+
+\begin{equation}
+\boxed{
+    Q = \frac{1}{4\pi}\sum_l A_l .
+}
+\label{eq:berg}
+\end{equation}
+
+This is exact rather than approximate: it is the area of the image of a
+piecewise-geodesic interpolation of the spin field, so $Q$ is the degree of a
+map from a closed surface to $S^2$ and comes out an exact integer
+(Sec.~\ref{sec:integrality}).
+
+What this module returns is not $Q$ but the \emph{density} behind it: each
+triangle's $A_l/4\pi$ shared equally among its three vertices, giving one
+number $q_i$ per site with
+
+\begin{equation}
+    \sum_i q_i = Q .
+    \label{eq:sumrule}
+\end{equation}
+
+The density is the object of interest --- it shows where the charge sits, which
+is what a picture of a skyrmion is --- and Eq.~\eqref{eq:sumrule} then serves
+as a free and extremely sharp correctness check on the whole path.
+
+\begin{remark}[Code layout]
+\texttt{tools/topocharge.py} holds the numerics and nothing else: no argument
+parsing, no plotting. The triangulation is built by \texttt{build\_triangles},
+the areas by \texttt{triangle\_charge}, and \texttt{site\_density} is the only
+function the renderer calls. The result is exposed as one more entry in the
+\texttt{DERIVED} table of \texttt{tools/frame.py}, so it reaches
+\texttt{tools/animate.py} without a line of new rendering code. The self-test
+is in the module's \texttt{\_\_main\_\_} block; run the file directly.
+\end{remark}
+
+% ======================================================================
+\section{Input}
+% ======================================================================
+
+One frame, as returned by \texttt{tools/dumpframe.py}: the site positions
+$\rvec_i$, a three-component vector per site read from named dump columns, and
+the box bounds. The box is the reason \texttt{dumpframe} carries the
+\texttt{BOX BOUNDS} block rather than discarding it --- the triangulation has to
+wrap, and the periodic images are not otherwise known. It is converted to
+lattice vectors by \texttt{geometry.lammps\_box\_to\_lattice}, shared with the
+$\mathbf{q}$-resolved route, so a triclinic cell is handled the same way in
+both.
+
+\subsection{Two Requirements on the Sites}
+
+\textbf{Only the magnetic sublattice.} Non-magnetic species carry no spin
+direction and are not part of the texture. In a NiI$_2$ dump, two thirds of the
+atoms are iodine; leaving them in makes the triangulation meaningless. Select
+with \texttt{-\/-element}, or drop zero vectors with
+\texttt{-\/-drop-zero-vector}.
+
+\textbf{One site per primitive cell, on a regular $n_1\times n_2$ grid.} This
+is what \texttt{replicate $n_1$ $n_2$ 1} of a cell with a single magnetic atom
+produces, and it is what makes the elementary triangles of Sec.~\ref{sec:tri}
+well defined. The grid is read off the positions (Sec.~\ref{sec:grid}) rather
+than assumed, and a
+mismatch between $n_1n_2$ and the number of sites is reported as an error
+naming the most likely cause, rather than silently triangulating something
+else.
+
+\subsection{Normalisation}
+
+Eq.~\eqref{eq:continuum} is written for a unit vector field, and the identities
+of Sec.~\ref{sec:area} assume $\lVert\mvec_i\rVert=1$. The spins are therefore
+normalised on input,
+
+\begin{equation}
+    \mvec_i = \frac{\mathbf{S}_i}{\lVert\mathbf{S}_i\rVert} ,
+\end{equation}
+
+and a site with $\mathbf{S}_i=0$ --- which has no direction at all --- raises an
+error instead of producing a silent \texttt{NaN}.
+
+% ======================================================================
+\section{Triangulation}
+\label{sec:tri}
+% ======================================================================
+
+\subsection{Why Not Delaunay}
+
+The obvious approach --- Delaunay-triangulate the positions each frame --- is
+wrong here for a specific reason. On a perfect triangular lattice every
+elementary rhombus has its four corners on a common circle, so the Delaunay
+triangulation is degenerate: either diagonal is admissible, and which one a
+library returns is decided by rounding. Thermal displacement then makes the
+choice flip from frame to frame. The charge itself survives this (both
+triangulations are valid coverings), but the \emph{density} does not: $q_i$
+depends on which triangles a site belongs to, so the picture flickers. A
+per-frame Delaunay is also $O(\Na\log\Na)$ against $O(\Na)$ for the
+construction below.
+
+The connectivity is instead built once and reused for every frame. This
+requires the atom order to be identical in every frame, which LAMMPS guarantees
+under \texttt{dump\_modify $\langle$id$\rangle$ sort id}.
+
+\subsection{Reading the Grid off the Positions}
+\label{sec:grid}
+
+Let $f^{(1)}_i, f^{(2)}_i$ be the fractional coordinates of site $i$,
+
+\begin{equation}
+    \mathbf{f}_i = \rvec_i\,\mathbf{L}^{-1},
+\end{equation}
+
+with $\mathbf{L}$ the cell matrix whose rows are $\avec_1,\avec_2,\avec_3$.
+Working in fractional coordinates rather than in $x,y$ is what makes a triclinic
+cell --- the NiI$_2$ supercell has $xy = -99.48$~\AA{} --- no different from an
+orthogonal one.
+
+On a perfect $n_1\times n_2$ grid the first fractional coordinate takes the
+values $f^{(1)} = k/n_1$. Hence the order parameter
+
+\begin{equation}
+\boxed{
+    \Phi(n) = \left|\frac{1}{\Na}\sum_i e^{2\pi i\,n f^{(1)}_i}\right|
+}
+\label{eq:sharp}
+\end{equation}
+
+satisfies $\Phi(n_1) = 1$, and $\Phi(n) = 0$ for every $n < n_1$, since
+$\sum_k e^{2\pi i nk/n_1}$ vanishes unless $n_1 \mid n$. The smallest $n$ with
+$\Phi(n) > 0.9$ is therefore $n_1$; the same applied to $f^{(2)}$ gives $n_2$.
+
+This is preferred to clustering the coordinates with a distance tolerance
+because it degrades gracefully and needs nothing tuned. Thermal displacement of
+r.m.s.\ fractional size $\sigma$ only lowers the peak,
+
+\begin{equation}
+    \Phi(n_1) \simeq \exp\!\left[-\tfrac{1}{2}(2\pi n_1\sigma)^2\right] ,
+\end{equation}
+
+so the criterion holds as long as the displacement stays well below the lattice
+spacing --- exactly the regime in which "one site per cell" is meaningful at
+all. Outside it the routine raises rather than guesses, and
+\texttt{-\/-topo-grid $n_1$ $n_2$} overrides.
+
+\subsection{Removing the Grid Offset}
+
+The cell index follows from $i \approx n_1 f^{(1)}$, but rounding that directly
+is fragile: the dump's origin is arbitrary, and if the grid happens to sit
+half-way between integers every site rounds ambiguously. The offset is
+therefore measured from the phase of the same sum and removed first,
+
+\begin{equation}
+\boxed{
+    i = \left[\operatorname{round}\!\left(n_1 f^{(1)}
+        - \frac{1}{2\pi}\arg\sum_j e^{2\pi i\,n_1 f^{(1)}_j}\right)\right]
+        \bmod n_1 ,
+}
+\end{equation}
+
+which centres every cluster of sites on an integer before rounding. The result
+cannot depend on where the box origin sits. A collision --- two sites in one
+cell --- is detected and reported.
+
+\subsection{Elementary Triangles}
+
+Each cell $(i,j)$ contributes the two triangles that tile its rhombus:
+
+\begin{equation}
+    \bigl[(i,j),\ (i{+}1,j),\ (i,j{+}1)\bigr],
+    \qquad
+    \bigl[(i{+}1,j),\ (i{+}1,j{+}1),\ (i,j{+}1)\bigr],
+\end{equation}
+
+with the indices taken modulo $n_1$ and $n_2$. There are exactly
+$\Ntri = 2n_1n_2 = 2\Na$ triangles; they are non-overlapping, they cover the
+cell once, and because the indices wrap the covered surface is a closed torus.
+That closure is what Sec.~\ref{sec:integrality} rests on. In the code the whole
+construction is four \texttt{np.roll} calls on the $(n_1,n_2)$ table of site
+indices.
+
+\subsection{Orientation}
+
+Eq.~\eqref{eq:berg} requires the triangles to be ordered anticlockwise; ordering
+one clockwise flips the sign of its $A_l$. Rather than test each triangle, note
+that the vertex order above is anticlockwise precisely when the cell itself is,
+so a single test on the cell vectors settles all $\Ntri$ at once:
+
+\begin{equation}
+    (\avec_1\times\avec_2)\cdot\hat z < 0
+    \;\Longrightarrow\;
+    \text{reverse every triangle.}
+\end{equation}
+
+\subsection{Layers}
+
+A bilayer has two decoupled textures, and stitching them into one surface would
+connect sites that are not neighbours. The sites are therefore split at the
+midpoint of the $z$ range --- the same rule \texttt{frame.py} uses to draw its
+two panels --- and each layer is triangulated and closed independently, so
+Eq.~\eqref{eq:sumrule} holds per layer and the total is the sum of two
+integers. \texttt{-\/-single-layer} treats the frame as one surface.
+
+% ======================================================================
+\section{The Signed Spherical Area}
+\label{sec:area}
+% ======================================================================
+
+\subsection{The Two Identities}
+
+For a triangle with unit spins $\mvec_i,\mvec_j,\mvec_k$, write
+
+\begin{equation}
+    a = \mvec_i\cdot\mvec_j, \qquad
+    b = \mvec_j\cdot\mvec_k, \qquad
+    c = \mvec_k\cdot\mvec_i, \qquad
+    \rho = \sqrt{2(1+a)(1+b)(1+c)} .
+\end{equation}
+
+The signed area $A_l$ of the spherical triangle they span is fixed by the pair
+
+\begin{equation}
+\boxed{
+    \cos\frac{A_l}{2} = \frac{1 + a + b + c}{\rho},
+    \qquad
+    \sin\frac{A_l}{2} = \frac{\mvec_i\cdot(\mvec_j\times\mvec_k)}{\rho} .
+}
+\label{eq:pair}
+\end{equation}
+
+The second identity is the origin of the sign rule usually quoted alongside the
+first,
+$\operatorname{sign}(A_l) = \operatorname{sign}[\mvec_i\cdot(\mvec_j\times\mvec_k)]$:
+since $\rho>0$, the sign of $A_l$ is the sign of the scalar triple product,
+which is in turn the orientation of the three spins on the sphere.
+
+\subsection{Evaluation}
+
+The two identities of Eq.~\eqref{eq:pair} share the denominator $\rho$, so
+dividing them removes it:
+
+\begin{equation}
+\boxed{
+    A_l = 2\operatorname{atan2}
+    \bigl(\,\mvec_i\cdot(\mvec_j\times\mvec_k),\;\;
+             1 + a + b + c\,\bigr) \in (-2\pi, 2\pi] .
+}
+\label{eq:atan2}
+\end{equation}
+
+This is what the code evaluates. It is three vectorised lines over all
+$\Ntri$ triangles at once, it needs no square root, and the two-argument
+arctangent recovers both the magnitude and the sign in a single call --- the
+sign rule is not applied separately because it is already contained in the sign
+of the first argument.
+
+\subsection{Conditioning: Why Not \texorpdfstring{$\arccos$}{arccos}}
+\label{sec:conditioning}
+
+Taking $\arccos$ of the first identity alone and multiplying by the sign rule is
+algebraically identical and numerically worse. Two effects, both verified
+numerically in Sec.~\ref{sec:validation}:
+
+\textbf{Amplification at small $A_l$.} From
+$\frac{d}{dA}\cos\frac{A}{2} = -\frac{1}{2}\sin\frac{A}{2} \simeq -A/4$, an
+absolute error $\delta$ in the argument becomes
+
+\begin{equation}
+    \delta A_l \simeq \frac{4\delta}{A_l} ,
+\end{equation}
+
+which diverges as $A_l\to0$. A smooth texture puts nearly every triangle there:
+$A_l \sim (a/R)^2$ for a texture of length scale $R$ on a lattice of spacing
+$a$.
+
+\textbf{An absolute error floor.} The divergence is capped only by the
+resolution of the argument itself. The largest double below $1$ differs from it
+by $\delta = \eps/2 = 1.11\times10^{-16}$, and
+
+\begin{equation}
+    \arccos(1-\delta) \simeq \sqrt{2\delta} ,
+\end{equation}
+
+so a triangle whose true $A_l$ is zero returns
+
+\begin{equation}
+\boxed{
+    |\delta A_l| \;\gtrsim\; 2\sqrt{2\delta} \;=\; 3.0\times10^{-8}\ \text{rad},
+}
+\label{eq:floor}
+\end{equation}
+
+no matter how smooth the texture is. The amplification from argument to result
+is $1/\sqrt{2\delta}\approx 7\times10^{7}$. Eq.~\eqref{eq:atan2} has no such
+floor: with $\sin$ and $\cos$ supplied separately, $\operatorname{atan2}$ is
+well conditioned through $A_l = 0$.
+
+\begin{remark}[How much this actually matters]
+Eq.~\eqref{eq:floor} is a floor of $3.0\times10^{-8}$ rad per triangle, or
+$2.4\times10^{-9}$ per site in $q_i$. A skyrmion peaks near
+$q_i \sim 5\times10^{-3}$, so the $\arccos$ form would still produce a
+recognisable picture --- the floor sits some six orders below the signal. The
+argument for Eq.~\eqref{eq:atan2} is not that the alternative fails, but that it
+is simpler (no $\rho$, no square root, no separate sign) \emph{and} exact, so
+there is nothing to trade. The $\arccos$ form is retained in the self-test as an
+independent cross-check of Eq.~\eqref{eq:atan2}.
+\end{remark}
+
+\subsection{Degenerate Triangles}
+
+If any two spins of a triangle are exactly antiparallel, say $\mvec_j=-\mvec_i$,
+then $1+a = 0$ and $\rho = 0$. Both sides of Eq.~\eqref{eq:pair} become $0/0$:
+the numerator of the first is $b + c = \mvec_k\cdot(\mvec_i+\mvec_j) = 0$ and
+that of the second vanishes with it. This is not a numerical accident but a
+genuine degeneracy --- three spins with two antipodal do not determine a
+spherical triangle, and $A_l$ is undefined.
+
+The $\arccos$ form returns \texttt{NaN}. Eq.~\eqref{eq:atan2} returns
+$\operatorname{atan2}(0,0) = 0$, which is a definite value for an undefined
+quantity, so neither form is safe in this limit and the configuration itself is
+what has to be checked. The self-test reports
+$\min_{\langle ij\rangle}(1 + \mvec_i\cdot\mvec_j)$ so proximity to the
+degeneracy is visible. Smoothly modulated textures --- spirals, skyrmions,
+spin waves --- have small angles between neighbours and stay far from it; a
+sharp antiferromagnet on the same triangulation would not, and would need the
+magnetic unit cell treated as the repeating unit instead.
+
+% ======================================================================
+\section{From Charge to Density}
+% ======================================================================
+
+Eq.~\eqref{eq:berg} lives on triangles, but \texttt{tripcolor} with Gouraud
+shading --- the renderer \texttt{frame.py} already uses --- wants one value per
+\emph{vertex}. Each triangle's charge is therefore split equally among its
+three sites:
+
+\begin{equation}
+\boxed{
+    q_i = \frac{1}{4\pi}\sum_{l \ni i} \frac{A_l}{3} ,
+    \qquad \sum_i q_i = \frac{1}{4\pi}\sum_l A_l = Q .
+}
+\label{eq:density}
+\end{equation}
+
+The second equality is immediate --- every triangle has exactly three vertices,
+so the thirds reassemble --- and it is the sum rule of Eq.~\eqref{eq:sumrule}.
+On the uniform triangulation each site belongs to six triangles.
+
+\begin{remark}[Units]
+$q_i$ is dimensionless and sums to the integer $Q$. The integrand of
+Eq.~\eqref{eq:continuum} is a density per unit area; it is recovered as
+$q_i/A_{\text{site}}$ with
+$A_{\text{site}} = |\avec_1\times\avec_2|/\Na$ the area per site. Since that is
+a global constant the two differ only by the scale on the colour bar, and the
+dimensionless form is used because it makes the sum rule readable directly off
+the data.
+\end{remark}
+
+\begin{remark}[The alternative]
+Plotting $A_l/4\pi$ per triangle with \texttt{shading="flat"} is closer to
+Eq.~\eqref{eq:berg} as written, but produces $2\Na$ facets instead of $\Na$
+values and cannot be registered against the arrows drawn at the sites. The
+vertex form is used for both reasons.
+\end{remark}
+
+% ======================================================================
+\section{Integrality}
+\label{sec:integrality}
+% ======================================================================
+
+\begin{theorem}
+For any configuration of unit spins on the closed triangulation of
+Sec.~\ref{sec:tri}, with no degenerate triangle, $Q$ as defined by
+Eq.~\eqref{eq:berg} is an integer.
+\end{theorem}
+
+Interpolate the spins geodesically across each triangle. This maps the closed
+surface covered by the triangulation --- a torus, because the cell indices wrap
+--- continuously onto $S^2$. The total signed area swept is $4\pi$ times the
+number of times the sphere is covered, i.e.\ $4\pi$ times the degree of the map,
+and the degree of a map between closed oriented surfaces is an integer. No
+smoothness of the texture is needed: the statement holds for a random
+configuration just as much as for a skyrmion.
+
+This is the single most useful property of the construction, because it fails
+loudly if anything upstream is wrong. Every one of the following breaks it:
+
+\begin{itemize}
+    \item a triangle ordered clockwise while its neighbours are anticlockwise;
+    \item indices that do not wrap, leaving the surface open at the boundary;
+    \item a missing or duplicated triangle;
+    \item two layers stitched into one surface;
+    \item non-magnetic sites left among the magnetic ones.
+\end{itemize}
+
+Checking $\sum_i q_i \in \mathbb{Z}$ therefore tests the triangulation, the
+orientation, the wrapping, the layer split and the site selection at once, on
+whatever data is at hand --- no reference result required. It is the first thing
+the self-test does, on random spins, where nothing else could serve as a
+reference.
+
+% ======================================================================
+\section{Validation}
+\label{sec:validation}
+% ======================================================================
+
+The self-test (\texttt{python3 tools/topocharge.py}) runs on ideal triangular
+lattices with a triclinic cell, at two grid shapes to catch anything that
+happens to work only when $n_1 = n_2$.
+
+\begin{center}
+\begin{tabular}{lll}
+    \toprule
+    Check & Result & \\
+    \midrule
+    Triangle count & $2n_1n_2$ & the rhombus tiling is complete \\
+    Random spins, $24\times24$ & $Q = -3.000000000000$ & integrality, no reference needed \\
+    Random spins, $30\times18$ & $Q = -6.000000000000$ & \\
+    Skyrmion, both shapes & $Q = -1.000000000000$ & exactly one quantum \\
+    Bilayer, one each & $Q = -2.000000000000$ & layers not stitched \\
+    Jittered positions & identical connectivity & Eq.~\eqref{eq:sharp} survives noise \\
+    $\arccos$ vs.\ Eq.~\eqref{eq:atan2} & $1.6\times10^{-14}$, $2.4\times10^{-9}$ & see below \\
+    $\min(1+\mvec_i\cdot\mvec_j)$ & $1.87$, $1.91$ & far from degeneracy \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+The two figures in the $\arccos$ row are Sec.~\ref{sec:conditioning}'s two
+regimes, and were traced to the individual triangles responsible. At
+$24\times24$ the worst triangle has $A_l = 2.87\times10^{-3}$, and
+$4\delta/A_l = 3.1\times10^{-13}$ against an observed $2.1\times10^{-13}$ --- the
+amplification law. At $30\times18$ the worst has $A_l = -1.5\times10^{-17}$,
+effectively zero, with $\cos(A_l/2)$ one ulp below $1$; Eq.~\eqref{eq:floor}
+predicts $2.98\times10^{-8}$ rad and the observed discrepancy is
+$2.98\times10^{-8}$ rad. Both mechanisms are quantitative, not qualitative.
+
+\subsection{End-to-End}
+
+Two further checks run through the full path, dump file included:
+
+\textbf{A synthetic skyrmion dump} (40$\times$40, triclinic, two frames, the
+second with the skyrmion displaced) read by \texttt{dumpframe} and reduced by
+\texttt{site\_density} gives $Q = -1.000000000000$ on both frames. This
+exercises the \texttt{BOX BOUNDS} parsing and the reuse of the cached
+connectivity on a texture that has moved.
+
+\textbf{\texttt{examples/s4.lammpstrj}} gives $\max_i|q_i| = 0$ exactly. That
+trajectory is a single-$\mathbf{q}$ spin wave, modulated along one direction
+only, so $\partial_x\mvec \parallel \partial_y\mvec$ and the integrand of
+Eq.~\eqref{eq:continuum} vanishes identically. A one-dimensional texture
+carrying no topological density is a statement about the physics, not about the
+lattice, and the code reproduces it to the last bit.
+
+% ======================================================================
+\section{Usage}
+% ======================================================================
+
+The density is exposed as the derived colour \texttt{topo}, so it is drawn by
+the existing renderer:
+
+\begin{verbatim}
+python3 tools/frame.py dump.lammpstrj --frame 1500 \
+    --vector 'c_outsp[1]' 'c_outsp[2]' 'c_outsp[3]' \
+    --color topo --element Ni --single-layer \
+    --cmap RdBu_r --vmin -0.006 --vmax 0.006 --out topo.png
+\end{verbatim}
+
+\texttt{tools/animate.py} takes the same options and produces the animation.
+Four practical points:
+
+\begin{itemize}
+    \item \texttt{-\/-vector} is required. \texttt{topo} is a function of the
+    spin direction, so the three spin columns must be named even when no arrows
+    are drawn (\texttt{-\/-no-arrows}).
+    \item \texttt{-\/-element} (or \texttt{-\/-drop-zero-vector}) is required
+    whenever the dump holds more than the magnetic sublattice.
+    \item Set \texttt{-\/-vmin}/\texttt{-\/-vmax} by hand, symmetrically, with a
+    diverging colormap. The density is strongly peaked at a skyrmion core, so
+    an automatic range is set by that peak and leaves the surroundings flat.
+    \item \texttt{-\/-topo-grid $n_1$ $n_2$} is only needed if
+    Eq.~\eqref{eq:sharp} fails to identify the grid, which it reports rather
+    than guessing.
+\end{itemize}
+
+% ======================================================================
+\section{Summary of the Algorithm}
+% ======================================================================
+
+Steps 1--5 run once; steps 6--8 run per frame.
+
+\begin{enumerate}
+    \item \textbf{Convert} the box bounds to lattice vectors and the positions
+    to fractional coordinates.
+    \item \textbf{Split} into layers at the midpoint of the $z$ range, unless
+    \texttt{-\/-single-layer}.
+    \item \textbf{Identify} the grid $n_1\times n_2$ from Eq.~\eqref{eq:sharp};
+    verify $n_1n_2 = \Na$.
+    \item \textbf{Index} each site by cell, with the grid offset removed;
+    verify no collisions.
+    \item \textbf{Build} $2\Na$ triangles by wrapping the cell indices, and
+    orient them from $(\avec_1\times\avec_2)\cdot\hat z$. Cache.
+    \item \textbf{Normalise} the spins to unit length.
+    \item \textbf{Evaluate} $A_l$ for every triangle by Eq.~\eqref{eq:atan2}.
+    \item \textbf{Accumulate} $A_l/12\pi$ onto each of the triangle's three
+    vertices, Eq.~\eqref{eq:density}.
+\end{enumerate}
+
+The per-frame cost is $O(\Na)$ with no transcendental work beyond one
+$\operatorname{atan2}$ per triangle.
+
+% ======================================================================
+\section{Notation}
+% ======================================================================
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        Symbol & Meaning \\
+        \midrule
+        $\Na$ & Magnetic sites in the layer, $= n_1 n_2$ \\
+        $n_1, n_2$ & Cell repeats along $\avec_1, \avec_2$ \\
+        $\Ntri$ & Triangles, $= 2\Na$ per layer \\
+        $\mathbf{L}$ & Cell matrix, rows $\avec_1,\avec_2,\avec_3$ \\
+        $\mathbf{f}_i$ & Fractional coordinates of site $i$ \\
+        $\mvec_i$ & Unit spin on site $i$ \\
+        $a,b,c$ & Pairwise dot products within a triangle \\
+        $\rho$ & $\sqrt{2(1+a)(1+b)(1+c)}$, the shared denominator \\
+        $A_l$ & Signed spherical area of triangle $l$, Eq.~\eqref{eq:atan2} \\
+        $q_i$ & Topological charge density on site $i$, Eq.~\eqref{eq:density} \\
+        $Q$ & Total topological charge, $\sum_i q_i \in \mathbb{Z}$ \\
+        $\eps$ & Machine epsilon, $2.22\times10^{-16}$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{Notation.}
+\end{table}
+
+\end{document}
