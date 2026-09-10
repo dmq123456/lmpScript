@@ -33,7 +33,8 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dumpframe import load_single_frame, spec_label  # noqa: E402
-from topocharge import site_density  # noqa: E402
+from polarization import site_density as polarization_density  # noqa: E402
+from topocharge import site_density as topological_density  # noqa: E402
 
 
 # ----------------------------------------------------------------------
@@ -41,7 +42,8 @@ from topocharge import site_density  # noqa: E402
 # ----------------------------------------------------------------------
 # Each entry is (getter, label). The getter takes the frame and the render
 # config, because a derived field is not always a function of the vector alone
-# -- the topological charge density also needs the positions and the box.
+# -- the topological charge density and the polarization density both need the
+# positions and the box as well, to find each site's neighbours.
 DERIVED = {
     "vx": (lambda f, cfg: f["u"], "$v_x$"),
     "vy": (lambda f, cfg: f["v"], "$v_y$"),
@@ -50,7 +52,12 @@ DERIVED = {
              r"$|\mathbf{v}|$"),
     "inplane": (lambda f, cfg: np.sqrt(f["u"] ** 2 + f["v"] ** 2),
                 r"$|\mathbf{v}_\parallel|$"),
-    "topo": (site_density, r"$q_i$"),
+    "topo": (topological_density, r"$q_i$"),
+    "px": (lambda f, cfg: polarization_density(f, cfg, "x"), r"$p_i^x\ (e\,\mathrm{\AA})$"),
+    "py": (lambda f, cfg: polarization_density(f, cfg, "y"), r"$p_i^y\ (e\,\mathrm{\AA})$"),
+    "pz": (lambda f, cfg: polarization_density(f, cfg, "z"), r"$p_i^z\ (e\,\mathrm{\AA})$"),
+    "pnorm": (lambda f, cfg: polarization_density(f, cfg, "norm"),
+              r"$|\mathbf{p}_i|\ (e\,\mathrm{\AA})$"),
 }
 
 
@@ -201,9 +208,11 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
                              "Each accepts '+'-joined names, which are summed")
     parser.add_argument("--color", type=str, default=None, metavar="C",
                         help="Dump column mapped to colour ('+'-joined names are summed), "
-                             "or one of vx/vy/vz/norm/inplane/topo derived from --vector. "
-                             "'topo' is the topological charge density q_i, which sums to "
-                             "the integer charge Q over a layer. "
+                             "or one of vx/vy/vz/norm/inplane/topo/px/py/pz/pnorm derived "
+                             "from --vector. 'topo' is the topological charge density q_i, "
+                             "which sums to the integer charge Q over a layer; 'px'/'py'/"
+                             "'pz'/'pnorm' are the spin-current polarization density p_i, "
+                             "which sums to the layer polarization P. "
                              "Defaults to the vector magnitude when only --vector is given")
     parser.add_argument("--element", type=str, default="all",
                         help="Element symbol to include, or 'all'")
@@ -217,9 +226,17 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--subtract-mean", action="store_true",
                         help="Colour the deviation from the frame average; the mean is "
                              "printed in the title")
-    parser.add_argument("--topo-grid", type=int, nargs=2, metavar=("N1", "N2"), default=None,
-                        help="Cell repeats behind --color topo. Read off the positions when "
-                             "omitted; give it only if that inference fails")
+    parser.add_argument("--lattice-grid", "--topo-grid", type=int, nargs=2,
+                        dest="lattice_grid", metavar=("N1", "N2"), default=None,
+                        help="Cell repeats behind the neighbour-based colours (topo, px, "
+                             "py, pz, pnorm). Read off the positions when omitted; give it "
+                             "only if that inference fails. --topo-grid is a kept alias")
+    parser.add_argument("--pol-shells", type=int, nargs="+", default=[1, 3], metavar="N",
+                        help="Neighbour shells summed by the polarization colours")
+    parser.add_argument("--spin-length", type=float, default=1.0, metavar="S",
+                        help="Spin length S behind the polarization colours; p scales as "
+                             "S^2 and has to match the convention the M matrices were "
+                             "fitted in")
     parser.add_argument("--cmap", type=str, default="viridis", help="Matplotlib colormap")
     parser.add_argument("--vmin", type=float, default=None, help="Lower colour limit")
     parser.add_argument("--vmax", type=float, default=None, help="Upper colour limit")
@@ -258,7 +275,9 @@ def config_from_args(args, vmin=None, vmax=None) -> dict:
         "vmin": args.vmin if vmin is None else vmin,
         "vmax": args.vmax if vmax is None else vmax,
         "single_layer": args.single_layer,
-        "topo_grid": tuple(args.topo_grid) if args.topo_grid else None,
+        "lattice_grid": tuple(args.lattice_grid) if args.lattice_grid else None,
+        "shells": tuple(args.pol_shells),
+        "spin_length": args.spin_length,
         "subtract_mean": args.subtract_mean,
         "arrows": not args.no_arrows,
         "arrow_scale": args.arrow_scale,

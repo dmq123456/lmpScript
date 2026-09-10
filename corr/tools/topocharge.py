@@ -34,10 +34,11 @@ The magnetic sites are taken to be one per primitive cell on a regular n1 x n2
 grid, which is what `replicate n1 n2 1` of a cell with a single magnetic atom
 produces. Each cell contributes two triangles and the cell indices wrap, so the
 surface is closed and Q comes out an exact integer -- the cheapest check that
-the whole path is right. The grid is read off the fractional coordinates rather
-than assumed, and the connectivity is built once and reused for every frame,
-which requires the atom order to be the same in every frame
-(`dump_modify ... sort id`).
+the whole path is right. The grid itself is read off the fractional coordinates
+by `lattice_grid.py`, shared with `polarization.py` so the two cannot disagree
+about which site sits in which cell, and the connectivity is built once and
+reused for every frame, which requires the atom order to be the same in every
+frame (`dump_modify ... sort id`).
 
 Delaunay is deliberately not used: on a perfect triangular lattice four points
 are cocircular, so the triangulation is not unique and flickers from frame to
@@ -57,56 +58,19 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 
 from geometry import lammps_box_to_lattice  # noqa: E402
+from lattice_grid import (  # noqa: E402
+    grid_from_cfg,
+    grid_index,
+    grid_period,
+    layer_masks,
+    site_of_grid,
+)
 
 
 # ----------------------------------------------------------------------
-# Reading the grid off the positions
-# ----------------------------------------------------------------------
-def grid_period(frac: np.ndarray, max_n: int, sharpness: float = 0.9) -> int:
-    """Number of cells along one axis, from the fractional coordinates.
-
-    For a perfect grid the coordinates are f = k/n, so |<exp(2 pi i n f)>| = 1
-    at n and vanishes below it. Thermal displacement only lowers the peak, so a
-    single threshold works without a distance tolerance to tune.
-    """
-    frac = np.asarray(frac, dtype=float).ravel()
-    for start in range(1, max_n + 1, 256):
-        ns = np.arange(start, min(start + 256, max_n + 1))
-        strength = np.abs(np.exp(2j * np.pi * np.outer(ns, frac)).mean(axis=1))
-        hits = np.nonzero(strength > sharpness)[0]
-        if hits.size:
-            return int(ns[hits[0]])
-    raise ValueError(
-        "Could not read a regular grid off the magnetic-site positions. Either "
-        "the sites are not one per primitive cell, or they are displaced too "
-        "far from their ideal positions. Pass the repeat counts explicitly with "
-        "--topo-grid N1 N2."
-    )
-
-
-def grid_index(frac: np.ndarray, n: int) -> np.ndarray:
-    """Cell index 0..n-1 for each site along one axis.
-
-    The grid's own offset is removed first (the phase of the same Fourier sum),
-    so every cluster of sites is centred on an integer before rounding and the
-    result cannot depend on where the box origin happens to sit.
-    """
-    frac = np.asarray(frac, dtype=float).ravel()
-    offset = np.angle(np.exp(2j * np.pi * n * frac).mean()) / (2.0 * np.pi)
-    return np.rint(n * frac - offset).astype(np.int64) % n
-
-
 # ----------------------------------------------------------------------
 # Triangulation
 # ----------------------------------------------------------------------
-def _layer_masks(z: np.ndarray, single_layer: bool) -> list[np.ndarray]:
-    """Same split as frame.py draws, so each panel gets its own closed surface."""
-    if single_layer:
-        return [np.ones(z.size, dtype=bool)]
-    midpoint = 0.5 * (z.min() + z.max())
-    return [z > midpoint, z <= midpoint]
-
-
 def _triangles_one_layer(
     positions: np.ndarray,
     lattice: np.ndarray,
@@ -117,32 +81,7 @@ def _triangles_one_layer(
     if n_sites < 3:
         raise ValueError(f"Need at least 3 magnetic sites to triangulate, got {n_sites}.")
 
-    frac = positions @ np.linalg.inv(lattice)
-    frac[:, :2] -= np.floor(frac[:, :2])
-
-    if grid is None:
-        n1 = grid_period(frac[:, 0], max_n=n_sites)
-        n2 = grid_period(frac[:, 1], max_n=n_sites)
-    else:
-        n1, n2 = int(grid[0]), int(grid[1])
-    if n1 * n2 != n_sites:
-        raise ValueError(
-            f"Grid {n1} x {n2} = {n1 * n2} does not match the {n_sites} site(s) in this "
-            "layer. The most common cause is non-magnetic atoms left in the frame -- "
-            "select the magnetic sublattice with --element (e.g. --element Ni). For a "
-            "bilayer, drop --single-layer so the two layers are triangulated separately."
-        )
-
-    i = grid_index(frac[:, 0], n1)
-    j = grid_index(frac[:, 1], n2)
-    site_of = np.full((n1, n2), -1, dtype=np.int64)
-    site_of[i, j] = np.arange(n_sites, dtype=np.int64)
-    if np.any(site_of < 0):
-        raise ValueError(
-            "Two magnetic sites landed in the same cell, so the sites are not one per "
-            "primitive cell on a regular grid. Pass --topo-grid N1 N2 if the grid was "
-            "read wrongly, or check that only the magnetic sublattice is selected."
-        )
+    site_of, n1, n2 = site_of_grid(positions, np.asarray(lattice, float), grid)
 
     right = np.roll(site_of, -1, axis=0)   # (i+1, j)
     up = np.roll(site_of, -1, axis=1)      # (i, j+1)
@@ -173,7 +112,7 @@ def build_triangles(
     positions = np.stack([np.asarray(x, float), np.asarray(y, float), np.asarray(z, float)],
                          axis=1)
     blocks = []
-    for mask in _layer_masks(positions[:, 2], single_layer):
+    for mask in layer_masks(positions[:, 2], single_layer):
         where = np.nonzero(mask)[0]
         if where.size == 0:
             continue
@@ -262,7 +201,7 @@ def site_density(frame: dict, cfg: dict | None = None) -> np.ndarray:
             "--vector 'c_outsp[1]' 'c_outsp[2]' 'c_outsp[3]'."
         )
     single_layer = bool(cfg.get("single_layer", True))
-    grid = cfg.get("topo_grid") or None
+    grid = grid_from_cfg(cfg)
     n_sites = int(frame["x"].size)
 
     key = (n_sites, single_layer, tuple(grid) if grid else None)
