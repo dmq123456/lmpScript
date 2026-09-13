@@ -74,7 +74,7 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent))
 
 from geometry import lammps_box_to_lattice, reciprocal_lattice_from_real  # noqa: E402
-from lattice_grid import grid_from_cfg, layer_masks, site_of_grid  # noqa: E402
+from lattice_grid import grid_from_cfg, layer_grids  # noqa: E402
 
 
 # ----------------------------------------------------------------------
@@ -208,13 +208,13 @@ class BondFamily(NamedTuple):
 
 
 def _families_one_layer(
-    positions: np.ndarray,
+    site_of: np.ndarray,
+    n1: int,
+    n2: int,
     lattice: np.ndarray,
     shells: tuple[int, ...],
-    grid: tuple[int, int] | None,
     orbits: dict[int, dict[int, np.ndarray]],
 ) -> list[BondFamily]:
-    site_of, n1, n2 = site_of_grid(positions, lattice, grid)
     # The offsets below count primitive cells, so the bond direction has to be
     # built from the primitive vectors. Taking the box vectors instead is right
     # only when n1 == n2 and silently skews every direction otherwise.
@@ -281,11 +281,8 @@ def build_families(
     lattice = np.asarray(lattice, dtype=float)
 
     per_layer: list[list[BondFamily]] = []
-    for mask in layer_masks(positions[:, 2], single_layer):
-        where = np.nonzero(mask)[0]
-        if where.size == 0:
-            continue
-        local = _families_one_layer(positions[where], lattice, tuple(shells), grid, orbits)
+    for where, site_of, n1, n2 in layer_grids(positions, lattice, single_layer, grid):
+        local = _families_one_layer(site_of, n1, n2, lattice, tuple(shells), orbits)
         per_layer.append([
             family._replace(site_i=where[family.site_i], site_j=where[family.site_j])
             for family in local

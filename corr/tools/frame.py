@@ -33,6 +33,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dumpframe import load_single_frame, spec_label  # noqa: E402
+from boundcharge import site_charge  # noqa: E402
 from polarization import site_density as polarization_density  # noqa: E402
 from topocharge import site_density as topological_density  # noqa: E402
 
@@ -58,6 +59,7 @@ DERIVED = {
     "pz": (lambda f, cfg: polarization_density(f, cfg, "z"), r"$p_i^z\ (e\,\mathrm{\AA})$"),
     "pnorm": (lambda f, cfg: polarization_density(f, cfg, "norm"),
               r"$|\mathbf{p}_i|\ (e\,\mathrm{\AA})$"),
+    "rho": (site_charge, r"$\rho_i\ (e)$"),
 }
 
 
@@ -212,7 +214,9 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
                              "from --vector. 'topo' is the topological charge density q_i, "
                              "which sums to the integer charge Q over a layer; 'px'/'py'/"
                              "'pz'/'pnorm' are the spin-current polarization density p_i, "
-                             "which sums to the layer polarization P. "
+                             "which sums to the layer polarization P; 'rho' is the bound "
+                             "charge -div P per cell, which sums to zero and is non-zero "
+                             "only where the texture is not uniform. "
                              "Defaults to the vector magnitude when only --vector is given")
     parser.add_argument("--element", type=str, default="all",
                         help="Element symbol to include, or 'all'")
@@ -233,6 +237,10 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
                              "only if that inference fails. --topo-grid is a kept alias")
     parser.add_argument("--pol-shells", type=int, nargs="+", default=[1, 3], metavar="N",
                         help="Neighbour shells summed by the polarization colours")
+    parser.add_argument("--divergence", choices=("stencil", "spectral"), default="stencil",
+                        help="Discretisation behind --color rho. The six-neighbour stencil "
+                             "does not ring at a domain wall; the spectral form is exact "
+                             "for a smooth texture but decorates walls with false charge")
     parser.add_argument("--spin-length", type=float, default=1.0, metavar="S",
                         help="Spin length S behind the polarization colours; p scales as "
                              "S^2 and has to match the convention the M matrices were "
@@ -277,6 +285,7 @@ def config_from_args(args, vmin=None, vmax=None) -> dict:
         "single_layer": args.single_layer,
         "lattice_grid": tuple(args.lattice_grid) if args.lattice_grid else None,
         "shells": tuple(args.pol_shells),
+        "divergence": args.divergence,
         "spin_length": args.spin_length,
         "subtract_mean": args.subtract_mean,
         "arrows": not args.no_arrows,

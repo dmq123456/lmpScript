@@ -109,6 +109,29 @@ def site_of_grid(
     return site_of, n1, n2
 
 
+def layer_grids(
+    positions: np.ndarray,
+    lattice: np.ndarray,
+    single_layer: bool = True,
+    grid: tuple[int, int] | None = None,
+) -> list[tuple[np.ndarray, np.ndarray, int, int]]:
+    """One (where, site_of, n1, n2) record per layer.
+
+    `where` maps a layer-local site index back to its index in the frame, so a
+    caller can build its connectivity in cell coordinates and translate the
+    result once at the end. Empty layers are dropped rather than returned.
+    """
+    positions = np.asarray(positions, dtype=float)
+    out = []
+    for mask in layer_masks(positions[:, 2], single_layer):
+        where = np.nonzero(mask)[0]
+        if where.size == 0:
+            continue
+        site_of, n1, n2 = site_of_grid(positions[where], lattice, grid)
+        out.append((where, site_of, n1, n2))
+    return out
+
+
 def grid_from_cfg(cfg: dict | None) -> tuple[int, int] | None:
     """The explicit grid out of a render config, under either option name.
 
@@ -123,6 +146,7 @@ __all__ = [
     "grid_from_cfg",
     "grid_index",
     "grid_period",
+    "layer_grids",
     "layer_masks",
     "site_of_grid",
 ]
