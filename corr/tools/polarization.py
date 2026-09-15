@@ -74,7 +74,11 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent))
 
 from geometry import lammps_box_to_lattice, reciprocal_lattice_from_real  # noqa: E402
-from lattice_grid import grid_from_cfg, layer_grids  # noqa: E402
+from lattice_grid import (  # noqa: E402
+    grid_from_cfg,
+    lattice_from_frame as _lattice_from_frame,
+    layer_grids,
+)
 
 
 # ----------------------------------------------------------------------
@@ -367,16 +371,6 @@ def areal_pC_per_m(polarization: np.ndarray, lattice: np.ndarray) -> np.ndarray:
 # Frame interface
 # ----------------------------------------------------------------------
 _FAMILY_CACHE: dict[tuple, list[list[BondFamily]]] = {}
-
-
-def _lattice_from_frame(frame: dict) -> np.ndarray:
-    if "box_lines" not in frame:
-        raise ValueError(
-            "This frame carries no box bounds, so the periodic images needed to close "
-            "the lattice are unknown. Re-read the dump with a dumpframe that keeps the "
-            "box (load_frames/load_single_frame store frame['box_lines'])."
-        )
-    return lammps_box_to_lattice(frame.get("box_header", ""), frame["box_lines"])
 
 
 def families_for_frame(frame: dict, cfg: dict | None = None) -> list[list[BondFamily]]:

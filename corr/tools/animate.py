@@ -19,6 +19,15 @@ process per frame would spend one to two seconds importing matplotlib before
 drawing anything, which for a few thousand frames costs more than the entire
 calculation.
 
+    animate.py dump.lammpstrj sq.gif --space bz --element Ni --single-layer \\
+        --vector 'c_outsp[1]' 'c_outsp[2]' 'c_outsp[3]' --mark-peaks 6
+
+--space picks which renderer the loop calls: `frame.py` draws the texture in
+real space, `bzmap.py` draws S(q) over the Brillouin zone. Everything else --
+reading, frame selection, the shared colour range, MPI, GIF assembly -- is the
+same either way, so the two movies of one trajectory always cover the same
+frames on the same scale.
+
 Under mpirun, rank 0 reads the frames and every rank renders a share of them.
 """
 
@@ -46,6 +55,7 @@ from frame import (  # noqa: E402
     render_rgba,
     resolve_range,
 )
+import bzmap  # noqa: E402
 from dumpframe import load_frames  # noqa: E402
 from mpi import (  # noqa: E402
     _format_duration,
@@ -62,8 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_common_arguments(parser)
+    bzmap.add_bz_arguments(parser)
     parser.add_argument("output_gif", type=Path, nargs="?", default=Path("texture.gif"),
                         help="Output GIF path")
+    parser.add_argument("--space", choices=("real", "bz"), default="real",
+                        help="'real' animates the texture through frame.py; 'bz' animates "
+                             "S(q) over the Brillouin zone through bzmap.py. The options "
+                             "added by bzmap (--channel, --scale, --zone, --mark-peaks) "
+                             "are ignored in real space")
     parser.add_argument("--frame-start", type=int, default=0, help="First frame, inclusive")
     parser.add_argument("--frame-stop", type=int, default=None, help="Stop before this frame")
     parser.add_argument("--frame-step", type=int, default=1, help="Keep one frame every N")
@@ -75,15 +91,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def render_all(frames, cfg, mpi_comm, rank, size, progress, reports):
-    """Render every frame, splitting the work across ranks. Rank 0 gets the images."""
+def render_all(frames, cfg, mpi_comm, rank, size, progress, reports,
+               render=None, render_bytes=None):
+    """Render every frame, splitting the work across ranks. Rank 0 gets the images.
+
+    `render` and `render_bytes` select which renderer draws a frame; they default
+    to the real-space pair in frame.py. Both are needed because the serial path
+    keeps images in memory while the MPI path ships PNG bytes between ranks.
+    """
+    render = render or render_rgba
+    render_bytes = render_bytes or render_png_bytes
     if mpi_comm is None:
         images = []
         total = len(frames)
         interval = _progress_report_interval(total, reports)
         started = time.perf_counter()
         for i, frame in enumerate(frames):
-            images.append(Image.fromarray(render_rgba(frame, cfg)))
+            images.append(Image.fromarray(render(frame, cfg)))
             done = i + 1
             if progress and (done % interval == 0 or done == total):
                 rate = done / max(time.perf_counter() - started, 1e-9)
@@ -100,7 +124,7 @@ def render_all(frames, cfg, mpi_comm, rank, size, progress, reports):
 
     local = []
     for step, index in enumerate(mine, start=1):
-        local.append((int(index), render_png_bytes(frames[int(index)], cfg)))
+        local.append((int(index), render_bytes(frames[int(index)], cfg)))
         if progress and rank == 0 and (step % interval == 0 or step == mine.size):
             print(f"[INFO] Rank 0 rendered {step}/{mine.size} of its share")
 
@@ -131,9 +155,15 @@ def main(argv=None) -> None:
     mpi_comm, rank, size = resolve_mpi_comm()
     is_root = rank == 0
 
-    if args.vector is None and args.color is None:
-        raise ValueError("Nothing to plot: give --vector, --color, or both.")
-    check_vector_requirement(args)
+    if args.space == "bz":
+        if args.vector is None:
+            raise ValueError(
+                "--space bz builds S(q) from the spin field, so --vector is required."
+            )
+    else:
+        if args.vector is None and args.color is None:
+            raise ValueError("Nothing to plot: give --vector, --color, or both.")
+        check_vector_requirement(args)
 
     frames = None
     error = None
@@ -165,17 +195,23 @@ def main(argv=None) -> None:
     if error is not None:
         raise ValueError(error)
 
-    cfg = config_from_args(args)
+    in_bz = args.space == "bz"
+    cfg = bzmap.bz_config_from_args(args) if in_bz else config_from_args(args)
+    renderer = (bzmap.render_rgba, bzmap.render_png_bytes) if in_bz else (None, None)
+    span_of = bzmap.resolve_range if in_bz else resolve_range
     span = None
     if is_root:
-        span = resolve_range(frames, cfg)
+        span = span_of(frames, cfg)
     if mpi_comm is not None:
         span = mpi_comm.bcast(span if is_root else None, root=0)
     cfg["vmin"], cfg["vmax"] = span
 
     if is_root:
+        print(f"[INFO] Space           : {args.space}")
         print(f"[INFO] Vector          : {args.vector or 'none'}")
-        print(f"[INFO] Colour          : {args.color or 'vector magnitude'}")
+        print(f"[INFO] Colour          : "
+              + (f"{args.channel} ({args.scale} scale)" if in_bz
+                 else f"{args.color or 'vector magnitude'}"))
         print(f"[INFO] Colour range    : [{span[0]:g}, {span[1]:g}]")
         print(f"[INFO] Colormap        : {args.cmap}")
         print(f"[INFO] Layer mode      : {'single' if args.single_layer else 'bilayer'}")
@@ -183,7 +219,7 @@ def main(argv=None) -> None:
         print("[INFO] Rendering frames...")
 
     images = render_all(frames, cfg, mpi_comm, rank, size,
-                        args.progress, args.progress_reports)
+                        args.progress, args.progress_reports, *renderer)
     if not is_root:
         return
 

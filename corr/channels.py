@@ -97,6 +97,20 @@ class Channel:
                 self._const += w
 
     @property
+    def constant_weight(self) -> np.ndarray:
+        """The q-independent part of W, i.e. everything except L and T."""
+        return self._const.copy()
+
+    @property
+    def n_longitudinal(self) -> int:
+        """How many times L appears, so W = const + n_L qq^T + n_T (I - qq^T)."""
+        return self._n_long
+
+    @property
+    def n_transverse(self) -> int:
+        return self._n_trans
+
+    @property
     def needs_qhat(self) -> bool:
         return self._n_long > 0 or self._n_trans > 0
 

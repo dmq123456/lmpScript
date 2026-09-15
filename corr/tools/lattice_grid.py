@@ -109,6 +109,19 @@ def site_of_grid(
     return site_of, n1, n2
 
 
+def lattice_from_frame(frame: dict) -> np.ndarray:
+    """The box vectors of one frame, as rows."""
+    from geometry import lammps_box_to_lattice
+
+    if "box_lines" not in frame:
+        raise ValueError(
+            "This frame carries no box bounds, so the periodic images needed to close "
+            "the lattice are unknown. Re-read the dump with a dumpframe that keeps the "
+            "box (load_frames/load_single_frame store frame['box_lines'])."
+        )
+    return lammps_box_to_lattice(frame.get("box_header", ""), frame["box_lines"])
+
+
 def layer_grids(
     positions: np.ndarray,
     lattice: np.ndarray,
@@ -145,6 +158,7 @@ def grid_from_cfg(cfg: dict | None) -> tuple[int, int] | None:
 __all__ = [
     "grid_from_cfg",
     "grid_index",
+    "lattice_from_frame",
     "grid_period",
     "layer_grids",
     "layer_masks",

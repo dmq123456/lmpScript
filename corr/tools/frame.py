@@ -210,7 +210,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
                              "Each accepts '+'-joined names, which are summed")
     parser.add_argument("--color", type=str, default=None, metavar="C",
                         help="Dump column mapped to colour ('+'-joined names are summed), "
-                             "or one of vx/vy/vz/norm/inplane/topo/px/py/pz/pnorm derived "
+                             "or one of vx/vy/vz/norm/inplane/topo/px/py/pz/pnorm/rho derived "
                              "from --vector. 'topo' is the topological charge density q_i, "
                              "which sums to the integer charge Q over a layer; 'px'/'py'/"
                              "'pz'/'pnorm' are the spin-current polarization density p_i, "
