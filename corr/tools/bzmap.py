@@ -54,7 +54,11 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent))
 
 from dumpframe import load_frames, load_single_frame  # noqa: E402
-from frame import add_common_arguments, config_from_args  # noqa: E402
+from frame import (  # noqa: E402
+    add_figure_arguments,
+    add_io_arguments,
+    config_from_args,
+)
 from structurefactor import (  # noqa: E402
     DEFAULT_CHANNEL,
     average_intensity,
@@ -77,6 +81,7 @@ _CHANNEL_LABEL = {
 # ----------------------------------------------------------------------
 def add_bz_arguments(parser: argparse.ArgumentParser) -> None:
     """The options that only mean something in reciprocal space."""
+    parser = parser.add_argument_group("reciprocal space")
     parser.add_argument("--channel", type=str, default=DEFAULT_CHANNEL, metavar="C",
                         help="Projection of s^a(q) s^b*(q): 'total' (= 1+5+9), 'L', 'T', "
                              "or any constant token of the --component grammar such as "
@@ -247,8 +252,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Render S(q) over the Brillouin zone for one frame.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    add_common_arguments(parser)
+    add_io_arguments(parser)
     add_bz_arguments(parser)
+    add_figure_arguments(parser)
     parser.add_argument("--frame", type=int, default=0, help="First frame to use")
     parser.add_argument("--out", type=Path, default=Path("bzmap.png"), help="Output image")
     return parser

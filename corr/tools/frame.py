@@ -202,65 +202,91 @@ def resolve_range(frames: list[dict], cfg: dict) -> tuple[float, float]:
 # ----------------------------------------------------------------------
 # Shared CLI options
 # ----------------------------------------------------------------------
+def add_io_arguments(parser: argparse.ArgumentParser) -> None:
+    """Which file, which atoms, which lattice -- needed whatever is drawn."""
+    group = parser.add_argument_group("input")
+    group.add_argument("input_dump", type=Path, help="Input LAMMPS dump file")
+    group.add_argument("--vector", nargs=3, metavar=("CX", "CY", "CZ"), default=None,
+                       help="Three dump columns holding the field, e.g. "
+                            "--vector 'c_outsp[1]' 'c_outsp[2]' 'c_outsp[3]'. "
+                            "Each accepts '+'-joined names, which are summed")
+    group.add_argument("--element", type=str, default="all",
+                       help="Element symbol to include, or 'all'")
+    group.add_argument("--drop-zero-vector", action="store_true",
+                       help="Skip atoms whose vector is exactly zero, the way the spin "
+                            "animation skipped non-magnetic sites")
+    group.add_argument("--single-layer", action="store_true",
+                       help="Treat the frame as one layer instead of splitting at the z "
+                            "midpoint into two")
+    group.add_argument("--lattice-grid", "--topo-grid", type=int, nargs=2,
+                       dest="lattice_grid", metavar=("N1", "N2"), default=None,
+                       help="Cell repeats of the supercell. Read off the positions when "
+                            "omitted; give it only if that inference fails. --topo-grid "
+                            "is a kept alias")
+
+
+def add_realspace_arguments(parser: argparse.ArgumentParser) -> None:
+    """Options that only mean something for a real-space panel.
+
+    bzmap.py deliberately does not take these. Inheriting the whole common set
+    was how it came to advertise --color, which it ignores in favour of
+    --channel, along with five more options with nothing to act on in
+    reciprocal space.
+    """
+    group = parser.add_argument_group("real-space panel")
+    group.add_argument("--color", type=str, default=None, metavar="C",
+                       help="Dump column mapped to colour ('+'-joined names are summed), "
+                            "or one of vx/vy/vz/norm/inplane/topo/px/py/pz/pnorm/rho derived "
+                            "from --vector. 'topo' is the topological charge density q_i, "
+                            "which sums to the integer charge Q over a layer; 'px'/'py'/"
+                            "'pz'/'pnorm' are the spin-current polarization density p_i, "
+                            "which sums to the layer polarization P; 'rho' is the bound "
+                            "charge -div P per cell, which sums to zero and is non-zero "
+                            "only where the texture is not uniform. "
+                            "Defaults to the vector magnitude when only --vector is given")
+    group.add_argument("--no-arrows", action="store_true",
+                       help="Read the vector but do not draw arrows")
+    group.add_argument("--arrow-scale", type=float, default=0.35,
+                       help="Quiver scale; smaller draws longer arrows")
+    group.add_argument("--subtract-mean", action="store_true",
+                       help="Colour the deviation from the frame average; the mean is "
+                            "printed in the title")
+    group.add_argument("--pol-shells", type=int, nargs="+", default=[1, 3], metavar="N",
+                       help="Neighbour shells summed by the polarization colours")
+    group.add_argument("--divergence", choices=("stencil", "spectral"), default="stencil",
+                       help="Discretisation behind --color rho. The six-neighbour stencil "
+                            "does not ring at a domain wall; the spectral form is exact "
+                            "for a smooth texture but decorates walls with false charge")
+    group.add_argument("--spin-length", type=float, default=1.0, metavar="S",
+                       help="Spin length S behind the polarization colours; p scales as "
+                            "S^2 and has to match the convention the M matrices were "
+                            "fitted in")
+
+
+def add_figure_arguments(parser: argparse.ArgumentParser) -> None:
+    """How the figure is drawn, in either space."""
+    group = parser.add_argument_group("figure")
+    group.add_argument("--cmap", type=str, default="viridis", help="Matplotlib colormap")
+    group.add_argument("--vmin", type=float, default=None, help="Lower colour limit")
+    group.add_argument("--vmax", type=float, default=None, help="Upper colour limit")
+    group.add_argument("--title", type=str, default=None, help="Panel title")
+    group.add_argument("--dpi", type=float, default=100.0,
+                       help="Figure resolution. The image is figsize x dpi pixels, so "
+                            "--dpi 200 doubles both dimensions. Raise it for a still to "
+                            "inspect; leave it low for an animation, where a GIF is "
+                            "limited to 256 colours anyway and every frame is held in "
+                            "memory until the file is written")
+    group.add_argument("--figsize", type=float, nargs=2, metavar=("W", "H"),
+                       default=(7.0, 5.0),
+                       help="Panel size in inches. Bilayer mode doubles the width to "
+                            "fit two panels")
+
+
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("input_dump", type=Path, help="Input LAMMPS dump file")
-    parser.add_argument("--vector", nargs=3, metavar=("CX", "CY", "CZ"), default=None,
-                        help="Three dump columns drawn as arrows, e.g. "
-                             "--vector 'c_outsp[1]' 'c_outsp[2]' 'c_outsp[3]'. "
-                             "Each accepts '+'-joined names, which are summed")
-    parser.add_argument("--color", type=str, default=None, metavar="C",
-                        help="Dump column mapped to colour ('+'-joined names are summed), "
-                             "or one of vx/vy/vz/norm/inplane/topo/px/py/pz/pnorm/rho derived "
-                             "from --vector. 'topo' is the topological charge density q_i, "
-                             "which sums to the integer charge Q over a layer; 'px'/'py'/"
-                             "'pz'/'pnorm' are the spin-current polarization density p_i, "
-                             "which sums to the layer polarization P; 'rho' is the bound "
-                             "charge -div P per cell, which sums to zero and is non-zero "
-                             "only where the texture is not uniform. "
-                             "Defaults to the vector magnitude when only --vector is given")
-    parser.add_argument("--element", type=str, default="all",
-                        help="Element symbol to include, or 'all'")
-    parser.add_argument("--drop-zero-vector", action="store_true",
-                        help="Skip atoms whose vector is exactly zero, the way the spin "
-                             "animation skipped non-magnetic sites")
-    parser.add_argument("--no-arrows", action="store_true",
-                        help="Read the vector but do not draw arrows")
-    parser.add_argument("--single-layer", action="store_true",
-                        help="One panel instead of splitting at the z midpoint")
-    parser.add_argument("--subtract-mean", action="store_true",
-                        help="Colour the deviation from the frame average; the mean is "
-                             "printed in the title")
-    parser.add_argument("--lattice-grid", "--topo-grid", type=int, nargs=2,
-                        dest="lattice_grid", metavar=("N1", "N2"), default=None,
-                        help="Cell repeats behind the neighbour-based colours (topo, px, "
-                             "py, pz, pnorm). Read off the positions when omitted; give it "
-                             "only if that inference fails. --topo-grid is a kept alias")
-    parser.add_argument("--pol-shells", type=int, nargs="+", default=[1, 3], metavar="N",
-                        help="Neighbour shells summed by the polarization colours")
-    parser.add_argument("--divergence", choices=("stencil", "spectral"), default="stencil",
-                        help="Discretisation behind --color rho. The six-neighbour stencil "
-                             "does not ring at a domain wall; the spectral form is exact "
-                             "for a smooth texture but decorates walls with false charge")
-    parser.add_argument("--spin-length", type=float, default=1.0, metavar="S",
-                        help="Spin length S behind the polarization colours; p scales as "
-                             "S^2 and has to match the convention the M matrices were "
-                             "fitted in")
-    parser.add_argument("--cmap", type=str, default="viridis", help="Matplotlib colormap")
-    parser.add_argument("--vmin", type=float, default=None, help="Lower colour limit")
-    parser.add_argument("--vmax", type=float, default=None, help="Upper colour limit")
-    parser.add_argument("--arrow-scale", type=float, default=0.35,
-                        help="Quiver scale; smaller draws longer arrows")
-    parser.add_argument("--title", type=str, default=None, help="Panel title")
-    parser.add_argument("--dpi", type=float, default=100.0,
-                        help="Figure resolution. The image is figsize x dpi pixels, so "
-                             "--dpi 200 doubles both dimensions. Raise it for a still to "
-                             "inspect; leave it low for an animation, where a GIF is "
-                             "limited to 256 colours anyway and every frame is held in "
-                             "memory until the file is written")
-    parser.add_argument("--figsize", type=float, nargs=2, metavar=("W", "H"),
-                        default=(7.0, 5.0),
-                        help="Panel size in inches. Bilayer mode doubles the width to "
-                             "fit two panels")
+    """Everything a real-space renderer takes."""
+    add_io_arguments(parser)
+    add_realspace_arguments(parser)
+    add_figure_arguments(parser)
 
 
 def check_vector_requirement(args) -> None:
@@ -277,19 +303,22 @@ def check_vector_requirement(args) -> None:
 
 
 def config_from_args(args, vmin=None, vmax=None) -> dict:
+    # bzmap.py builds its config from the same function but adds only the io and
+    # figure groups, so the real-space entries fall back to their defaults here
+    # rather than being options it would have to advertise and ignore.
     return {
-        "color": args.color,
+        "color": getattr(args, "color", None),
         "cmap": args.cmap,
         "vmin": args.vmin if vmin is None else vmin,
         "vmax": args.vmax if vmax is None else vmax,
         "single_layer": args.single_layer,
         "lattice_grid": tuple(args.lattice_grid) if args.lattice_grid else None,
-        "shells": tuple(args.pol_shells),
-        "divergence": args.divergence,
-        "spin_length": args.spin_length,
-        "subtract_mean": args.subtract_mean,
-        "arrows": not args.no_arrows,
-        "arrow_scale": args.arrow_scale,
+        "shells": tuple(getattr(args, "pol_shells", (1, 3))),
+        "divergence": getattr(args, "divergence", "stencil"),
+        "spin_length": getattr(args, "spin_length", 1.0),
+        "subtract_mean": getattr(args, "subtract_mean", False),
+        "arrows": not getattr(args, "no_arrows", False),
+        "arrow_scale": getattr(args, "arrow_scale", 0.35),
         "title": args.title,
         "dpi": args.dpi,
         "figsize": tuple(args.figsize),

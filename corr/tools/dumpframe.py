@@ -225,6 +225,43 @@ def load_frames(
     return frames, scanned
 
 
+def stream_frames(
+    dump_path: Path,
+    *,
+    vector: tuple[str, str, str] | None = None,
+    color: str | None = None,
+    element: str = "all",
+    drop_zero_vector: bool = False,
+    frame_start: int = 0,
+    frame_stop: int | None = None,
+    frame_step: int = 1,
+):
+    """Yield the selected frames one at a time.
+
+    The same selection load_frames makes, without holding the trajectory in
+    memory: a long run analysed frame by frame never needs more than one of
+    them at once.
+    """
+    scanned = 0
+    with Path(dump_path).open() as fh:
+        while True:
+            if frame_stop is not None and scanned >= frame_stop:
+                return
+            record = read_one_frame(fh)
+            if record is None:
+                return
+            timestep, box_header, box_lines, columns, atom_lines = record
+            if scanned >= frame_start and (scanned - frame_start) % frame_step == 0:
+                frame = extract(columns, atom_lines, vector=vector, color=color,
+                                element=element, drop_zero_vector=drop_zero_vector)
+                frame["frame_index"] = scanned
+                frame["timestep"] = timestep
+                frame["box_header"] = box_header
+                frame["box_lines"] = box_lines
+                yield frame
+            scanned += 1
+
+
 def load_single_frame(
     dump_path: Path,
     frame_index: int,
@@ -251,6 +288,7 @@ def load_single_frame(
 
 
 __all__ = [
+    "stream_frames",
     "read_one_frame",
     "count_frames",
     "parse_column_spec",

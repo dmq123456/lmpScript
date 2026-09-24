@@ -460,31 +460,6 @@ __all__ = [
 # ----------------------------------------------------------------------
 # Command line: the P(t) time series
 # ----------------------------------------------------------------------
-def _iter_frames(dump_path: Path, *, vector, element, drop_zero_vector,
-                 frame_start, frame_stop, frame_step):
-    """Frames one at a time, so a long trajectory never sits in memory at once."""
-    from dumpframe import extract, read_one_frame
-
-    scanned = 0
-    with Path(dump_path).open() as fh:
-        while True:
-            if frame_stop is not None and scanned >= frame_stop:
-                return
-            record = read_one_frame(fh)
-            if record is None:
-                return
-            timestep, box_header, box_lines, columns, atom_lines = record
-            if scanned >= frame_start and (scanned - frame_start) % frame_step == 0:
-                frame = extract(columns, atom_lines, vector=vector, element=element,
-                                drop_zero_vector=drop_zero_vector)
-                frame["frame_index"] = scanned
-                frame["timestep"] = timestep
-                frame["box_header"] = box_header
-                frame["box_lines"] = box_lines
-                yield frame
-            scanned += 1
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="polarization.py",
@@ -532,7 +507,9 @@ def main(argv=None) -> None:
     rows: list[tuple] = []
     lattice = None
     n_sites = n_layers = 0
-    for frame in _iter_frames(
+    from dumpframe import stream_frames
+
+    for frame in stream_frames(
         args.input_dump, vector=tuple(args.vector), element=args.element,
         drop_zero_vector=args.drop_zero_vector, frame_start=args.frame_start,
         frame_stop=args.frame_stop, frame_step=args.frame_step,
