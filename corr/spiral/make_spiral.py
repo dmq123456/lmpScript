@@ -164,8 +164,11 @@ def build(supercell: np.ndarray, q: np.ndarray, axis: np.ndarray,
 
 
 def write_dump(path: Path, cell, types, positions, directions, lengths,
-               timestep: int = 0, polarizations=None) -> None:
-    """One frame, in the column layout the LAMMPS runs produce."""
+               timestep: int = 0, polarizations=None, mode: str = "w") -> None:
+    """One frame, in the column layout the LAMMPS runs produce.
+
+    mode="a" appends the frame, which is how a multi-frame dump is built.
+    """
     lx, ly, lz = cell[0, 0], cell[1, 1], cell[2, 2]
     xy, xz, yz = cell[1, 0], cell[2, 0], cell[2, 1]
 
@@ -175,7 +178,7 @@ def write_dump(path: Path, cell, types, positions, directions, lengths,
     ylo_b = min(0.0, yz)
     yhi_b = ly + max(0.0, yz)
 
-    with path.open("w") as fh:
+    with path.open(mode) as fh:
         fh.write("ITEM: TIMESTEP\n")
         fh.write(f"{timestep}\n")
         fh.write("ITEM: NUMBER OF ATOMS\n")
