@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dumpframe import load_single_frame, spec_label  # noqa: E402
 from boundcharge import site_charge  # noqa: E402
+from polarization import DEFAULT_THICKNESS, POL_UNITS  # noqa: E402
 from polarization import site_density as polarization_density  # noqa: E402
 from topocharge import site_density as topological_density  # noqa: E402
 
@@ -62,6 +63,10 @@ DERIVED = {
     "rho": (site_charge, r"$\rho_i\ (e)$"),
 }
 
+#: Colour-bar unit of the polarization colours, by --pol-unit.
+POL_UNIT_LABELS = {"eA": r"e\,\mathrm{\AA}", "uC/cm2": r"\mu\mathrm{C/cm^2}"}
+POL_COLOURS = ("px", "py", "pz", "pnorm")
+
 
 def colour_values(frame: dict, color_spec: str | None,
                   cfg: dict | None = None) -> tuple[np.ndarray, str]:
@@ -76,6 +81,9 @@ def colour_values(frame: dict, color_spec: str | None,
                 f"--color {color_spec} is derived from the vector, so --vector is required."
             )
         getter, label = DERIVED[color_spec]
+        if color_spec in POL_COLOURS:
+            unit = (cfg or {}).get("pol_unit", "eA")
+            label = label.replace(POL_UNIT_LABELS["eA"], POL_UNIT_LABELS[unit])
         return getter(frame, cfg or {}), label
     if "c" in frame:
         return frame["c"], f"${spec_label(color_spec)}$".replace("_", r"\_")
@@ -253,6 +261,14 @@ def add_realspace_arguments(parser: argparse.ArgumentParser) -> None:
                             "printed in the title")
     group.add_argument("--pol-shells", type=int, nargs="+", default=[1, 3], metavar="N",
                        help="Neighbour shells summed by the polarization colours")
+    group.add_argument("--pol-unit", choices=POL_UNITS, default="eA",
+                       help="Unit of the polarization colours: the dipole per cell in "
+                            "e Angstrom, or that dipole divided by the cell volume "
+                            "(in-plane cell area x --pol-thickness) in uC/cm^2")
+    group.add_argument("--pol-thickness", type=float, default=DEFAULT_THICKNESS,
+                       metavar="ANGSTROM",
+                       help="Layer thickness behind --pol-unit uC/cm2; the default is "
+                            "the c axis of bulk NiI2")
     group.add_argument("--divergence", choices=("stencil", "spectral"), default="stencil",
                        help="Discretisation behind --color rho. The six-neighbour stencil "
                             "does not ring at a domain wall; the spectral form is exact "
@@ -316,6 +332,8 @@ def config_from_args(args, vmin=None, vmax=None) -> dict:
         "shells": tuple(getattr(args, "pol_shells", (1, 3))),
         "divergence": getattr(args, "divergence", "stencil"),
         "spin_length": getattr(args, "spin_length", 1.0),
+        "pol_unit": getattr(args, "pol_unit", "eA"),
+        "pol_thickness": getattr(args, "pol_thickness", DEFAULT_THICKNESS),
         "subtract_mean": getattr(args, "subtract_mean", False),
         "arrows": not getattr(args, "no_arrows", False),
         "arrow_scale": getattr(args, "arrow_scale", 0.35),

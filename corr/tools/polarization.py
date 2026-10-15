@@ -111,6 +111,18 @@ DEFAULT_SHELLS = (1, 3)
 #: 1 e Angstrom in C m, for the areal conversion.
 _E_ANGSTROM_IN_C_M = 1.602176634e-19 * 1.0e-10
 
+#: 1 e/Angstrom^2 in uC/cm^2, for the volume conversion of the per-site colours.
+#: The M matrices are quoted in units of the electron charge e < 0, so the
+#: conversion to coulombs carries the sign: e = -1.602e-19 C.
+_E_PER_A2_IN_UC_PER_CM2 = -1.602176634e-19 / 1.0e-16 * 1.0e6
+
+#: Layer thickness used by default for the volume conversion: the c axis of bulk
+#: NiI2 (P-3m1), i.e. the interlayer repeat a monolayer would have in the crystal.
+DEFAULT_THICKNESS = 6.54
+
+#: Units the per-site polarization colours can be drawn in.
+POL_UNITS = ("eA", "uC/cm2")
+
 
 # ----------------------------------------------------------------------
 # Symmetry
@@ -429,9 +441,30 @@ def frame_site_polarization(frame: dict, cfg: dict | None = None) -> np.ndarray:
 _COMPONENTS = {"x": 0, "y": 1, "z": 2}
 
 
+def site_volume(frame: dict, cfg: dict | None = None) -> float:
+    """Volume of one primitive cell in Angstrom^3: its in-plane area times the thickness.
+
+    p_i is a dipole per cell, so dividing by this gives a bulk-like polarization.
+    The area is the box area shared among the sites of one layer; the thickness
+    is not a property of a monolayer and has to be chosen (cfg['pol_thickness']).
+    """
+    cfg = cfg or {}
+    lattice = _lattice_from_frame(frame)
+    n_layers = len(families_for_frame(frame, cfg))
+    box_area = abs(np.cross(lattice[0][:2], lattice[1][:2]))
+    cell_area = box_area * n_layers / int(frame["x"].size)
+    return cell_area * float(cfg.get("pol_thickness", DEFAULT_THICKNESS))
+
+
 def site_density(frame: dict, cfg: dict | None = None, component: str = "norm") -> np.ndarray:
-    """One scalar per site for --color px/py/pz/pnorm."""
+    """One scalar per site for --color px/py/pz/pnorm, in cfg['pol_unit'] (e A by default)."""
+    cfg = cfg or {}
     p = frame_site_polarization(frame, cfg)
+    unit = cfg.get("pol_unit", "eA")
+    if unit == "uC/cm2":
+        p = p * _E_PER_A2_IN_UC_PER_CM2 / site_volume(frame, cfg)
+    elif unit != "eA":
+        raise ValueError(f"Unknown polarization unit {unit!r}; choose from {POL_UNITS}.")
     if component == "norm":
         return np.linalg.norm(p, axis=1)
     return p[:, _COMPONENTS[component]]
@@ -442,7 +475,10 @@ __all__ = [
     "DEFAULT_SHELLS",
     "M_REFERENCE",
     "M_UNIT",
+    "DEFAULT_THICKNESS",
+    "POL_UNITS",
     "areal_pC_per_m",
+    "site_volume",
     "build_families",
     "d3d_operations",
     "direction_matrices",
