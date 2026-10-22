@@ -101,6 +101,13 @@ def build_atoms(cell, columns, rows, args) -> Atoms:
             f"       LAMMPS keeps the magnitude in sp[3] and never dumps it, so a\n"
             f"       dump written by a real run needs the value supplying here."
         )
+
+    # Atoms without a moment (I) carry a placeholder unit direction in the dump,
+    # because LAMMPS atom_style spin needs one; the LAMMPS pair style feeds them
+    # to the model as zero (sp[3] = 0).  from_ase passes initial_magmoms as they
+    # are, so zero them here, as in the training set.
+    if "initial_magmoms" in atoms.arrays and "spin_length" in atoms.arrays:
+        atoms.arrays["initial_magmoms"][atoms.arrays["spin_length"] <= 0] = 0.0
     return atoms
 
 

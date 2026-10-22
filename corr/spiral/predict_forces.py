@@ -188,7 +188,19 @@ def main(argv=None) -> None:
                 f"error: frame {index} has no 'initial_magmoms'. The model is a spin "
                 f"model; a structure without spins cannot be evaluated."
             )
-        data = calc.transform(AtomicData.from_ase(atoms=atoms, r_max=calc.r_max))
+        # The model reads initial_magmoms and ignores spin_length, so atoms without
+        # a moment (spin_length <= 0, e.g. I with a placeholder direction) must be
+        # zero, as in the training set and in the LAMMPS pair style (sp[3] > 0).
+        model_atoms = atoms
+        if "spin_length" in atoms.arrays:
+            off = atoms.arrays["spin_length"] <= 0
+            if np.any(atoms.arrays["initial_magmoms"][off] != 0):
+                model_atoms = atoms.copy()
+                model_atoms.arrays["initial_magmoms"][off] = 0.0
+        elif index == 0:
+            print("[WARN] no 'spin_length' array: every initial_magmoms entry is used as a spin, "
+                  "so non-magnetic atoms must already be zero")
+        data = calc.transform(AtomicData.from_ase(atoms=model_atoms, r_max=calc.r_max))
         batch = AtomicData.to_AtomicDataDict(data)
         # from_ase builds its tensors on the CPU, so they have to follow the
         # model across; otherwise torch raises a device mismatch.
