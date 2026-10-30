@@ -146,6 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto",
                         help="Where to run: 'auto' uses a GPU when torch sees one, "
                              "or name it directly ('cpu', 'cuda', 'cuda:1')")
+    parser.add_argument("--allow-tf32", action="store_true",
+                        help="Keep TF32 matmuls on Ampere+ GPUs as the model metadata asks "
+                             "(faster, but ~1e-3 relative precision: energy differences of "
+                             "large cells become noisy). Default: full float32")
     return parser
 
 
@@ -166,7 +170,13 @@ def main(argv=None) -> None:
         set_global_options=True,
         species_to_type_name=mapping,
     )
+    # set_global_options applies the model's allow_tf32 (1 for this model); undo it
+    # unless asked, so that small energy differences are not lost to TF32 rounding.
+    if not args.allow_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     print(f"[INFO] Model        : {args.model}")
+    print(f"[INFO] TF32         : {torch.backends.cuda.matmul.allow_tf32}")
     print(f"[INFO] Device       : {device}"
           + (f"  ({torch.cuda.get_device_name(0)})" if device.startswith("cuda") else ""))
     print(f"[INFO] r_max        : {calc.r_max}")
@@ -209,7 +219,15 @@ def main(argv=None) -> None:
 
         forces = out[AtomicDataDict.FORCE_KEY].detach().cpu().numpy()
         spin_forces = out[spin_key].detach().cpu().numpy()
-        energy = float(out[AtomicDataDict.TOTAL_ENERGY_KEY].detach().cpu())
+        # The model sums the per-atom energies in float32; for thousands of atoms the
+        # rounding (~0.1-1 eV) swamps meV differences.  Sum them in float64 instead.
+        e32 = float(out[AtomicDataDict.TOTAL_ENERGY_KEY].detach().cpu())
+        if AtomicDataDict.PER_ATOM_ENERGY_KEY in out:
+            energy = float(out[AtomicDataDict.PER_ATOM_ENERGY_KEY].detach().cpu().double().sum())
+        else:
+            energy = e32
+            if index == 0:
+                print("[WARN] model gives no per-atom energies; using its float32 total energy")
         energies.append(energy)
 
         bec = None
@@ -229,7 +247,7 @@ def main(argv=None) -> None:
             "bec": bec,
             "type_of": type_of,
         })
-        print(f"[INFO] frame {index:4d} : E = {energy:15.6f} eV   "
+        print(f"[INFO] frame {index:4d} : E = {energy:15.6f} eV  (float32 total {e32 - energy:+.4f})   "
               f"max|F| = {np.abs(forces).max():.5f} eV/A   "
               f"max|sF| = {np.abs(spin_forces).max():.5f}")
 
