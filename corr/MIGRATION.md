@@ -129,3 +129,13 @@ $$\text{channel}(q,\omega)=\sum_{ab}W_{ab}\,\operatorname{Re}S^{ab}(q,\omega)$$
 ## npz 中的 `projection` 与 `freq_mode`
 
 前者随投影路线一起消失（改用 `--component`），后者是 periodogram 路线的 `--freq-mode direct` 遗留物，corr 路线固定走 FFT 网格。
+
+# dump 文件处理工具移到 `corr/dumputils/`
+
+| 旧位置 | 新位置 |
+|---|---|
+| `tools/extract_frames.py` | `corr/dumputils/extract_frames.py` |
+| （新增） | `corr/dumputils/extract_concat.sh` |
+
+- `extract_frames.py` 支持负的 `--frame-start` / `--frame-stop`（与 Python 切片相同，`-1` 为最后一帧）；遇到负数时从文件末尾向前查找帧头，不再从头逐行读取。
+- `extract_concat.sh OUT FILE1:START[:STOP[:STEP]] FILE2:...` 从多个 dump 中分别截取帧并按顺序拼接；它按自身所在目录调用 `extract_frames.py`，两者需放在同一目录。
