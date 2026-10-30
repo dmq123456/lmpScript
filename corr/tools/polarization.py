@@ -86,17 +86,19 @@ from lattice_grid import (  # noqa: E402
 # ----------------------------------------------------------------------
 # Reference matrices for the bond along +x, in units of M_UNIT. Shape is
 # [[A, 0, 0], [0, B, C], [0, D, E]]; the zeros are imposed by C2x and are
-# asserted, not assumed.
+# asserted, not assumed. The published matrices are quoted in units of the
+# electron charge (e < 0); every entry here carries the opposite sign so that
+# all outputs use e > 0, the elementary charge, like the BECs.
 M_REFERENCE: dict[int, np.ndarray] = {
-    1: np.array([[11.0, 0.0, 0.0],
-                 [0.0, 109.0, 139.0],
-                 [0.0, -4.0, 5.0]]),
-    3: np.array([[-1.0, 0.0, 0.0],
-                 [0.0, 16.0, 164.0],
-                 [0.0, -12.0, -10.0]]),
+    1: -np.array([[11.0, 0.0, 0.0],
+                  [0.0, 109.0, 139.0],
+                  [0.0, -4.0, 5.0]]),
+    3: -np.array([[-1.0, 0.0, 0.0],
+                  [0.0, 16.0, 164.0],
+                  [0.0, -12.0, -10.0]]),
 }
 
-#: The matrices above are quoted in 1e-5 e Angstrom.
+#: The matrices above are in 1e-5 e Angstrom, e > 0.
 M_UNIT = 1.0e-5
 
 #: Index step along a lattice vector that reaches each neighbour shell. First
@@ -112,9 +114,8 @@ DEFAULT_SHELLS = (1, 3)
 _E_ANGSTROM_IN_C_M = 1.602176634e-19 * 1.0e-10
 
 #: 1 e/Angstrom^2 in uC/cm^2, for the volume conversion of the per-site colours.
-#: The M matrices are quoted in units of the electron charge e < 0, so the
-#: conversion to coulombs carries the sign: e = -1.602e-19 C.
-_E_PER_A2_IN_UC_PER_CM2 = -1.602176634e-19 / 1.0e-16 * 1.0e6
+#: The sign of the published matrices is already absorbed into M_REFERENCE.
+_E_PER_A2_IN_UC_PER_CM2 = 1.602176634e-19 / 1.0e-16 * 1.0e6
 
 #: Layer thickness used by default for the volume conversion: the c axis of bulk
 #: NiI2 (P-3m1), i.e. the interlayer repeat a monolayer would have in the crystal.
@@ -713,9 +714,9 @@ def _selftest() -> int:
           "in M[0][2]/M[2][0]")
 
     root3 = np.sqrt(3.0)
-    expected120 = np.array([[169 / 2, 49 * root3 / 2, -139 * root3 / 2],
-                            [49 * root3 / 2, 71 / 2, -139 / 2],
-                            [2 * root3, 2.0, 5.0]])
+    expected120 = -np.array([[169 / 2, 49 * root3 / 2, -139 * root3 / 2],
+                             [49 * root3 / 2, 71 / 2, -139 / 2],
+                             [2 * root3, 2.0, 5.0]])
     check("M^1(120 deg) matches the closed form",
           np.allclose(orbit1[120], expected120, atol=1e-9),
           "R_z(120) M R_z(120)^T as tabulated")
